@@ -1,0 +1,21 @@
+# Rust
+/target/
+crates/*/target/
+
+# WASM generated output (rebuild with: npm run build:wasm)
+web/src/wasm/*.js
+web/src/wasm/*.wasm
+web/src/wasm/*.d.ts
+!web/src/wasm/wasm_data.ts  # keep placeholder
+
+# Node
+node_modules/
+web/node_modules/
+
+# Build output
+web/dist/
+
+# Editor
+.DS_Store
+.vscode/settings.json
+*.swp

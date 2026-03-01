@@ -104,6 +104,7 @@ Switch modes with the tab bar below the navbar. Each mode loads a different set 
 | **Engineering** ⚙ | CTO · Frontend Dev · Backend Dev · Full-Stack Dev · DevOps · QA · Security · Staff Engineer | Software projects |
 | **Finance** 📈 | CIO · Macro Strategist · Quant Analyst · Risk Manager · Sector Analyst · Portfolio Strategist | Investment research |
 | **Industrial** 🏭 | General Manager · Manufacturing Eng · Operations Manager · Supply Chain · Quality Eng · Commercial Manager · Plant Controller | Manufacturing, operations & supply chain |
+| **Biomedical** 🧬 | Chief Dev Officer · Research Scientist · Regulatory Affairs · Clinical Affairs · CMC · Quality & Compliance · Pharmacovigilance · Program Director | Drug & device development |
 | **+ New Mode** | Snapshot of your current agents | Any custom team |
 
 Click **+ New Mode** to save your current agent configuration as a named mode. Custom modes can be deleted; the three built-in ones cannot.

@@ -1,0 +1,166 @@
+<script lang="ts">
+  import { AGENT_COLORS } from '../lib/types'
+  import type { AgentConfig, AgentRole } from '../lib/types'
+  import { store } from '../lib/store.svelte'
+
+  interface Props {
+    agentId: string | '__new__'
+    onclose: () => void
+  }
+  const { agentId, onclose }: Props = $props()
+
+  // agentId is stable for the lifetime of this modal — no need for $derived
+  // eslint-disable-next-line svelte/no-reactive-literals
+  const isNew = agentId === '__new__'
+
+  function makeId(name: string): string {
+    return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
+  }
+
+  const existing = isNew ? null : (store.agentConfigs.find((a) => a.id === agentId) ?? null)
+
+  let draft = $state<AgentConfig>(
+    existing
+      ? { ...existing }
+      : {
+          id: '',
+          name: '',
+          role: 'worker',
+          systemPrompt: '',
+          color: AGENT_COLORS[Math.floor(Math.random() * AGENT_COLORS.length)],
+        },
+  )
+
+  $effect(() => {
+    if (isNew && draft.name) draft.id = makeId(draft.name)
+  })
+
+  function save() {
+    if (!draft.name.trim() || !draft.id.trim()) return
+    store.upsertAgent(draft)
+    onclose()
+  }
+
+  function remove() {
+    if (!isNew) store.removeAgent(agentId as string)
+    onclose()
+  }
+
+  const roles: AgentRole[] = ['orchestrator', 'worker', 'synthesizer', 'custom']
+</script>
+
+<div class="modal-backdrop" role="dialog" aria-modal="true">
+  <div class="modal">
+    <div class="modal-header">
+      {isNew ? '+ New Agent' : `Edit · ${existing?.name ?? agentId}`}
+      <button class="ghost icon" onclick={onclose}>✕</button>
+    </div>
+
+    <div class="modal-body">
+      <div class="row-two">
+        <div class="field">
+          <label for="agent-name">Name</label>
+          <input id="agent-name" type="text" bind:value={draft.name} placeholder="e.g. Researcher" />
+        </div>
+        <div class="field">
+          <label for="agent-role">Role</label>
+          <select id="agent-role" bind:value={draft.role}>
+            {#each roles as r}
+              <option value={r}>{r}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="agent-id">Agent ID</label>
+        <input id="agent-id" type="text" bind:value={draft.id} placeholder="snake_case_id" />
+        <small>Unique identifier used in inter-agent messages. Cannot be changed after creation.</small>
+      </div>
+
+      <div class="field">
+        <div class="field-label">Color</div>
+        <div class="color-row">
+          {#each AGENT_COLORS as c}
+            <button
+              class="color-swatch"
+              class:active={draft.color === c}
+              style="background: {c}"
+              onclick={() => (draft.color = c)}
+              title={c}
+            ></button>
+          {/each}
+          <input type="color" bind:value={draft.color} title="Custom color" class="color-input" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="system-prompt">System Prompt</label>
+        <textarea
+          id="system-prompt"
+          bind:value={draft.systemPrompt}
+          rows="7"
+          placeholder="Describe what this agent does and how it should behave…"
+        ></textarea>
+        <small>The GREMLIN communication protocol is appended automatically.</small>
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      {#if !isNew}
+        <button class="danger" onclick={remove} style="margin-right: auto">Remove</button>
+      {/if}
+      <button class="ghost" onclick={onclose}>Cancel</button>
+      <button class="primary" onclick={save} disabled={!draft.name.trim() || !draft.id.trim()}>
+        {isNew ? 'Add Agent' : 'Save'}
+      </button>
+    </div>
+  </div>
+</div>
+
+<style>
+  .row-two {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .field-label {
+    font-size: 11px;
+    color: var(--color-text-3);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+  }
+
+  .color-row {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .color-swatch {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    padding: 0;
+    cursor: pointer;
+    transition: transform 0.1s, border-color 0.1s;
+    flex-shrink: 0;
+    background-clip: padding-box;
+  }
+  .color-swatch:hover { transform: scale(1.15); }
+  .color-swatch.active { border-color: var(--text); transform: scale(1.1); }
+
+  .color-input {
+    width: 28px;
+    height: 28px;
+    padding: 1px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    cursor: pointer;
+    background: none;
+  }
+</style>
