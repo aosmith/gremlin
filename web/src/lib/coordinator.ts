@@ -33,10 +33,6 @@ export async function initCoordinator(): Promise<void> {
   ready = true
 }
 
-export function isReady(): boolean {
-  return ready
-}
-
 function wasm(): WasmCoordinator {
   if (!instance) throw new Error('WASM coordinator not initialised — call initCoordinator() first')
   return instance
@@ -54,10 +50,6 @@ export function addAgent(cfg: AgentConfig): void {
       color: cfg.color,
     }),
   )
-}
-
-export function removeAgent(id: string): void {
-  wasm().remove_agent(id)
 }
 
 interface RawAgentState {
@@ -126,11 +118,6 @@ export function getMessagesFor(agentId: string): Message[] {
 
 export function getMessageCountFor(agentId: string): number {
   return wasm().get_message_count_for(agentId)
-}
-
-export function getAllMessages(): Message[] {
-  const raw: RawMessage[] = JSON.parse(wasm().get_all_messages_json())
-  return raw.map(toMessage)
 }
 
 // ─── Status ────────────────────────────────────────────────────────────────────

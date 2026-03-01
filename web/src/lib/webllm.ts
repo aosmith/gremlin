@@ -38,15 +38,6 @@ export async function getEngine(
   return engine
 }
 
-/** Unload the current model (frees GPU memory) */
-export async function unloadEngine() {
-  if (engine) {
-    try { await (engine as MLCEngineInterface & { unload?: () => Promise<void> }).unload?.() } catch { /* ignore */ }
-    engine = null
-    loadedModel = ''
-  }
-}
-
 export function getLoadedModel(): string {
   return loadedModel
 }
