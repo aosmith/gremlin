@@ -11,17 +11,18 @@ export async function callLLM(
   messages: LLMMessage[],
   settings: Settings,
   onProgress?: ProgressCallback,
+  signal?: AbortSignal,
 ): Promise<string> {
   switch (settings.apiFormat) {
-    case 'anthropic': return callAnthropic(systemPrompt, messages, settings)
-    case 'gemini':    return callGemini(systemPrompt, messages, settings)
+    case 'anthropic': return callAnthropic(systemPrompt, messages, settings, signal)
+    case 'gemini':    return callGemini(systemPrompt, messages, settings, signal)
     case 'webllm':    return callWebLLM(
       [{ role: 'system', content: systemPrompt }, ...messages],
       settings.model,
       4096,
       onProgress,
     )
-    default:          return callOpenAICompat(systemPrompt, messages, settings)
+    default:          return callOpenAICompat(systemPrompt, messages, settings, signal)
   }
 }
 
@@ -39,16 +40,15 @@ export async function callLLMWithTools(
   tools: OAITool[],
   agentId: string,
   onToolCall: (e: ToolCallEvent) => void,
+  signal?: AbortSignal,
 ): Promise<string> {
   if (settings.apiFormat === 'anthropic') {
-    return callAnthropicWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall)
+    return callAnthropicWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall, signal)
   }
-  // webllm, gemini, openai-compat all use OAI-compat tool path
-  // (webllm provides an OpenAI-compatible engine directly)
   if (settings.apiFormat === 'webllm') {
     return callWebLLMWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall)
   }
-  return callOpenAIWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall)
+  return callOpenAIWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall, signal)
 }
 
 // ── OpenAI-compatible ─────────────────────────────────────────────────────────
@@ -57,8 +57,9 @@ async function callOpenAICompat(
   system: string,
   messages: LLMMessage[],
   settings: Settings,
+  signal?: AbortSignal,
 ): Promise<string> {
-  const resp = await oaiFetch(settings, [{ role: 'system', content: system }, ...messages])
+  const resp = await oaiFetch(settings, [{ role: 'system', content: system }, ...messages], undefined, signal)
   const data = await resp.json()
   const text = data?.choices?.[0]?.message?.content
   if (typeof text !== 'string') throw new Error(`Unexpected response: ${JSON.stringify(data)}`)
@@ -72,6 +73,7 @@ async function callOpenAIWithTools(
   tools: OAITool[],
   agentId: string,
   onToolCall: (e: ToolCallEvent) => void,
+  signal?: AbortSignal,
 ): Promise<string> {
   // Internal mutable message list for the tool loop
   type OAIMsg =
@@ -87,7 +89,7 @@ async function callOpenAIWithTools(
   const msgs: OAIMsg[] = [{ role: 'system', content: system }, ...messages]
 
   for (let round = 0; round < 20; round++) {
-    const resp = await oaiFetch(settings, msgs, tools)
+    const resp = await oaiFetch(settings, msgs, tools, signal)
     const data = await resp.json()
     const choice = data?.choices?.[0]
 
@@ -118,7 +120,7 @@ async function callOpenAIWithTools(
   throw new Error('Tool-call loop exceeded max rounds')
 }
 
-function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[]) {
+function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[], signal?: AbortSignal) {
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (settings.apiKey.trim()) headers['authorization'] = `Bearer ${settings.apiKey}`
   if (settings.apiEndpoint.includes('openrouter')) {
@@ -136,7 +138,7 @@ function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[]) {
     body.tool_choice = 'auto'
   }
 
-  return fetch(settings.apiEndpoint, { method: 'POST', headers, body: JSON.stringify(body) })
+  return fetch(settings.apiEndpoint, { method: 'POST', headers, body: JSON.stringify(body), signal })
     .then((r) => {
       if (!r.ok) return r.text().then((t) => {
         // Ollama returns a plain error object when the model isn't installed
@@ -155,8 +157,9 @@ async function callAnthropic(
   system: string,
   messages: LLMMessage[],
   settings: Settings,
+  signal?: AbortSignal,
 ): Promise<string> {
-  const resp = await anthropicFetch(settings, system, messages)
+  const resp = await anthropicFetch(settings, system, messages, undefined, signal)
   const data = await resp.json()
   const text = data?.content?.find((b: { type: string }) => b.type === 'text')?.text
   if (typeof text !== 'string') throw new Error(`Unexpected Anthropic response: ${JSON.stringify(data)}`)
@@ -170,6 +173,7 @@ async function callAnthropicWithTools(
   tools: OAITool[],
   agentId: string,
   onToolCall: (e: ToolCallEvent) => void,
+  signal?: AbortSignal,
 ): Promise<string> {
   type ABlock =
     | { type: 'text'; text: string }
@@ -181,7 +185,7 @@ async function callAnthropicWithTools(
   const msgs: AMsg[] = messages.map((m) => ({ role: m.role, content: m.content }))
 
   for (let round = 0; round < 20; round++) {
-    const resp = await anthropicFetch(settings, system, msgs, tools)
+    const resp = await anthropicFetch(settings, system, msgs, tools, signal)
     const data = await resp.json()
 
     if (data.stop_reason === 'tool_use') {
@@ -215,6 +219,7 @@ function anthropicFetch(
   system: string,
   messages: unknown[],
   tools?: OAITool[],
+  signal?: AbortSignal,
 ) {
   const body: Record<string, unknown> = {
     model: settings.model,
@@ -233,6 +238,7 @@ function anthropicFetch(
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify(body),
+    signal,
   }).then((r) => {
     if (!r.ok) return r.text().then((t) => { throw new Error(`Anthropic ${r.status}: ${t}`) })
     return r
@@ -306,6 +312,7 @@ async function callGemini(
   system: string,
   messages: LLMMessage[],
   settings: Settings,
+  signal?: AbortSignal,
 ): Promise<string> {
   const base = settings.apiEndpoint.replace(/\/$/, '')
   const url = `${base}/models/${settings.model}:generateContent?key=${settings.apiKey}`
@@ -323,6 +330,7 @@ async function callGemini(
       contents,
       generationConfig: { maxOutputTokens: 4096 },
     }),
+    signal,
   })
   if (!resp.ok) throw new Error(`Gemini ${resp.status}: ${await resp.text()}`)
   const data = await resp.json()

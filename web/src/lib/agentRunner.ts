@@ -37,12 +37,14 @@ export class AgentRunner {
   private cb!: RunnerCallbacks
   private tools: OAITool[] = []
   private aborted = false
+  private abortController = new AbortController()
   private loopRunning = false
   private agents: AgentConfig[] = []
   private round = 0
 
   abort() {
     this.aborted = true
+    this.abortController.abort()
   }
 
   async run(
@@ -53,6 +55,7 @@ export class AgentRunner {
     tools: OAITool[] = [],
   ): Promise<void> {
     this.aborted = false
+    this.abortController = new AbortController()
     this.settings = settings
     this.cb = callbacks
     this.tools = tools
@@ -224,6 +227,7 @@ export class AgentRunner {
     try {
       let response: string
 
+      const signal = this.abortController.signal
       if (this.tools.length > 0) {
         response = await callLLMWithTools(
           systemPrompt,
@@ -233,12 +237,12 @@ export class AgentRunner {
           agent.id,
           (e) => {
             this.cb.onToolCall?.(e)
-            // Also surface the tool call as a visible system message
             const summary = e.record.isError
               ? `✖ ${e.record.name} failed: ${e.record.result}`
               : `🔧 ${e.record.name}(${JSON.stringify(e.record.args)}) → ${e.record.result.slice(0, 120)}`
             this.emit({ fromAgent: agent.id, toAgent: 'system', content: summary, type: 'system', timestamp: Date.now(), round })
           },
+          signal,
         )
       } else {
         response = await callLLM(
@@ -246,6 +250,7 @@ export class AgentRunner {
           [...history, { role: 'user', content: userContent }],
           agentSettings,
           this.cb.onProgress,
+          signal,
         )
       }
 
@@ -276,10 +281,10 @@ export class AgentRunner {
         this.cb.onOutput(parsed.result)
       }
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return  // user stopped the run
       const msg = err instanceof Error ? err.message : String(err)
       coord.updateAgentStatus(agent.id, 'error')
       this.cb.onStatusUpdate(agent.id, 'error')
-
       this.emit({ fromAgent: agent.id, toAgent: 'user', content: `Error: ${msg}`, type: 'error', timestamp: Date.now(), round })
     }
   }
