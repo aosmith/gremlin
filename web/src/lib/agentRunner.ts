@@ -217,6 +217,11 @@ export class AgentRunner {
     const history = this.histories.get(agent.id) ?? []
     const systemPrompt = this.buildSystemPrompt(agent)
 
+    // Per-agent model override: merge into a local settings copy if set
+    const agentSettings = agent.model?.trim()
+      ? { ...this.settings, model: agent.model.trim() }
+      : this.settings
+
     try {
       let response: string
 
@@ -224,7 +229,7 @@ export class AgentRunner {
         response = await callLLMWithTools(
           systemPrompt,
           [...history, { role: 'user', content: userContent }],
-          this.settings,
+          agentSettings,
           this.tools,
           agent.id,
           (e) => {
@@ -256,7 +261,7 @@ export class AgentRunner {
         response = await callLLM(
           systemPrompt,
           [...history, { role: 'user', content: userContent }],
-          this.settings,
+          agentSettings,
           this.cb.onProgress,
         )
       }

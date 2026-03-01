@@ -38,9 +38,14 @@
       <span class="role">{agent.role}</span>
       <span class="status {agent.status}">{statusLabel[agent.status] ?? agent.status}</span>
     </div>
-    {#if agent.messageCount > 0}
-      <div class="stats mono">{agent.messageCount} msg{agent.messageCount !== 1 ? 's' : ''}</div>
-    {/if}
+    <div class="stats mono">
+      {#if agent.model}
+        <span class="model-badge" title="Model override: {agent.model}">⬡ {agent.model}</span>
+      {/if}
+      {#if agent.messageCount > 0}
+        {agent.messageCount} msg{agent.messageCount !== 1 ? 's' : ''}
+      {/if}
+    </div>
   </div>
 </div>
 
@@ -130,5 +135,19 @@
   .stats {
     font-size: 10px;
     color: var(--color-text-3);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .model-badge {
+    color: var(--color-accent-2);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 120px;
   }
 </style>

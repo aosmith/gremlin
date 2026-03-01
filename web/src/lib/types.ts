@@ -183,6 +183,8 @@ export interface AgentConfig {
   role: AgentRole
   systemPrompt: string
   color: string
+  /** Optional model override — falls back to global settings if not set */
+  model?: string
 }
 
 export interface AgentState extends AgentConfig {

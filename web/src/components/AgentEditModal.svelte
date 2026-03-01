@@ -1,7 +1,12 @@
 <script lang="ts">
-  import { AGENT_COLORS } from '../lib/types'
+  import { AGENT_COLORS, PROVIDERS } from '../lib/types'
   import type { AgentConfig, AgentRole } from '../lib/types'
   import { store } from '../lib/store.svelte'
+
+  // Model suggestions from the currently selected provider
+  const modelSuggestions = $derived(
+    PROVIDERS.find((p) => p.format === store.settings.apiFormat && p.id !== 'custom')?.models ?? []
+  )
 
   interface Props {
     agentId: string | '__new__'
@@ -28,6 +33,7 @@
           role: 'worker',
           systemPrompt: '',
           color: AGENT_COLORS[Math.floor(Math.random() * AGENT_COLORS.length)],
+          model: '',
         },
   )
 
@@ -104,6 +110,23 @@
         ></textarea>
         <small>The GREMLIN communication protocol is appended automatically.</small>
       </div>
+
+      <div class="field">
+        <label for="agent-model">Model <span class="optional">(override)</span></label>
+        <input
+          id="agent-model"
+          type="text"
+          list="model-suggestions"
+          bind:value={draft.model}
+          placeholder="Global: {store.settings.model}"
+        />
+        <datalist id="model-suggestions">
+          {#each modelSuggestions as m}
+            <option value={m}>{m}</option>
+          {/each}
+        </datalist>
+        <small>Leave blank to use the global model. Type any model name or pick from the list.</small>
+      </div>
     </div>
 
     <div class="modal-footer">
@@ -162,5 +185,13 @@
     border: 2px solid var(--border);
     cursor: pointer;
     background: none;
+  }
+
+  .optional {
+    font-size: 10px;
+    color: var(--color-text-4);
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
   }
 </style>
