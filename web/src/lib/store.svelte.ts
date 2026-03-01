@@ -109,7 +109,6 @@ class GremlinStore {
 
   // ── WebLLM ────────────────────────────────────────────────────────────────
   webllmProgress  = $state<WebLLMProgress | null>(null)
-  webllmReady     = $derived(this.settings.apiFormat === 'webllm' && getLoadedModel() === this.settings.model)
   webgpuAvailable = isWebGPUAvailable()
 
   // ── Filesystem / dev mode ────────────────────────────────────────────────

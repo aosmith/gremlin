@@ -29,15 +29,6 @@
     return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
   }
 
-  function msgClass(type: string): string {
-    if (type === 'task') return 'task'
-    if (type === 'error') return 'error'
-    if (type === 'human') return 'human'
-    if (type === 'system') return 'system'
-    if (type === 'result') return 'result'
-    return ''
-  }
-
   // Auto-scroll to bottom when new messages arrive
   $effect(() => {
     void messages.length
@@ -64,7 +55,7 @@
     {/if}
 
     {#each messages as msg (msg.id)}
-      <div class="event {msgClass(msg.type)}">
+      <div class="event {msg.type}">
         <span class="time mono">{formatTime(msg.timestamp)}</span>
         <span class="route">
           <span class="agent-name" style="color: {agentColor(msg.fromAgent)}">{agentName(msg.fromAgent)}</span>

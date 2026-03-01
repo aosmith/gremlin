@@ -78,76 +78,41 @@
   }
 </script>
 
+{#snippet renderNode(node: TreeNode)}
+  <li>
+    {#if node.kind === 'directory'}
+      <button class="dir-btn" onclick={() => toggleDir(node.path)} title={node.path}>
+        <span class="arrow" class:open={openDirs.has(node.path)}>›</span>
+        <span class="dir-icon">📁</span>
+        <span class="name">{node.name}</span>
+      </button>
+      {#if openDirs.has(node.path) && node.children.length > 0}
+        <ul class="subtree">
+          {#each node.children as child (child.path)}
+            {@render renderNode(child)}
+          {/each}
+        </ul>
+      {/if}
+    {:else}
+      <button
+        class="file-btn"
+        class:active={selectedFile === node.path}
+        onclick={() => onselect(node.path)}
+        title={node.path}
+      >
+        <span class="file-icon">{fileIcon(node.name)}</span>
+        <span class="name">{node.name}</span>
+      </button>
+    {/if}
+  </li>
+{/snippet}
+
 {#if files.length === 0}
   <div class="empty">No files yet</div>
 {:else}
   <ul class="tree">
     {#each tree as node (node.path)}
-      <li>
-        {#if node.kind === 'directory'}
-          <button
-            class="dir-btn"
-            onclick={() => toggleDir(node.path)}
-            title={node.path}
-          >
-            <span class="arrow" class:open={openDirs.has(node.path)}>›</span>
-            <span class="dir-icon">📁</span>
-            <span class="name">{node.name}</span>
-          </button>
-          {#if openDirs.has(node.path) && node.children.length > 0}
-            <ul class="subtree">
-              {#each node.children as child (child.path)}
-                <li>
-                  {#if child.kind === 'directory'}
-                    <button class="dir-btn" onclick={() => toggleDir(child.path)} title={child.path}>
-                      <span class="arrow" class:open={openDirs.has(child.path)}>›</span>
-                      <span class="dir-icon">📁</span>
-                      <span class="name">{child.name}</span>
-                    </button>
-                    {#if openDirs.has(child.path) && child.children.length > 0}
-                      <ul class="subtree">
-                        {#each child.children as grandchild (grandchild.path)}
-                          <li>
-                            <button
-                              class="file-btn"
-                              class:active={selectedFile === grandchild.path}
-                              onclick={() => grandchild.kind === 'file' && onselect(grandchild.path)}
-                              title={grandchild.path}
-                            >
-                              <span class="file-icon">{grandchild.kind === 'file' ? fileIcon(grandchild.name) : '📁'}</span>
-                              <span class="name">{grandchild.name}</span>
-                            </button>
-                          </li>
-                        {/each}
-                      </ul>
-                    {/if}
-                  {:else}
-                    <button
-                      class="file-btn"
-                      class:active={selectedFile === child.path}
-                      onclick={() => onselect(child.path)}
-                      title={child.path}
-                    >
-                      <span class="file-icon">{fileIcon(child.name)}</span>
-                      <span class="name">{child.name}</span>
-                    </button>
-                  {/if}
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        {:else}
-          <button
-            class="file-btn"
-            class:active={selectedFile === node.path}
-            onclick={() => onselect(node.path)}
-            title={node.path}
-          >
-            <span class="file-icon">{fileIcon(node.name)}</span>
-            <span class="name">{node.name}</span>
-          </button>
-        {/if}
-      </li>
+      {@render renderNode(node)}
     {/each}
   </ul>
 {/if}

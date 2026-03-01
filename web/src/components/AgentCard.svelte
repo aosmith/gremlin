@@ -9,9 +9,6 @@
   }
   const { agent, selected, onclick, onedit }: Props = $props()
 
-  const statusLabel: Record<string, string> = {
-    idle: 'Idle', running: 'Running', waiting: 'Waiting', done: 'Done', error: 'Error',
-  }
 </script>
 
 <div
@@ -36,7 +33,7 @@
     </div>
     <div class="meta">
       <span class="role">{agent.role}</span>
-      <span class="status {agent.status}">{statusLabel[agent.status] ?? agent.status}</span>
+      <span class="status {agent.status}">{agent.status[0].toUpperCase() + agent.status.slice(1)}</span>
     </div>
     <div class="stats mono">
       {#if agent.model}

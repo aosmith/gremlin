@@ -71,23 +71,7 @@ export class AgentRunner {
     if (!orchestrator) throw new Error('No orchestrator agent found')
 
     // Inject user task into orchestrator's inbox
-    const initMsgId = coord.routeMessage({
-      fromAgent: 'user',
-      toAgent: orchestrator.id,
-      content: task,
-      type: 'task',
-      timestamp: Date.now(),
-      round: 0,
-    })
-    callbacks.onMessage({
-      id: initMsgId,
-      fromAgent: 'user',
-      toAgent: orchestrator.id,
-      content: task,
-      type: 'task',
-      timestamp: Date.now(),
-      round: 0,
-    })
+    this.emit({ fromAgent: 'user', toAgent: orchestrator.id, content: task, type: 'task', timestamp: Date.now(), round: 0 })
 
     callbacks.onLog(`Session started${tools.length ? ' (dev mode — file tools enabled)' : ''}`)
 
@@ -147,16 +131,7 @@ export class AgentRunner {
 
             const unseenSummaries = workerSummaries.filter(Boolean)
             if (unseenSummaries.length > 0) {
-              const nudgeId = coord.routeMessage({
-                fromAgent: 'system',
-                toAgent: synthesizer.id,
-                content: 'All workers have completed. Please synthesize their findings:\n\n' + unseenSummaries.join('\n\n'),
-                type: 'system',
-                timestamp: Date.now(),
-                round: this.round,
-              })
-              this.cb.onMessage({
-                id: nudgeId,
+              this.emit({
                 fromAgent: 'system',
                 toAgent: synthesizer.id,
                 content: 'All workers have completed. Please synthesize their findings:\n\n' + unseenSummaries.join('\n\n'),
@@ -199,24 +174,7 @@ export class AgentRunner {
 
   // ── Human-in-the-loop: inject a message into a running agent's inbox ────────
   injectHumanMessage(targetAgentId: string, content: string): void {
-    const round = this.round
-    const msgId = coord.routeMessage({
-      fromAgent: 'user',
-      toAgent: targetAgentId,
-      content,
-      type: 'human',
-      timestamp: Date.now(),
-      round,
-    })
-    this.cb?.onMessage({
-      id: msgId,
-      fromAgent: 'user',
-      toAgent: targetAgentId,
-      content,
-      type: 'human',
-      timestamp: Date.now(),
-      round,
-    })
+    this.emit({ fromAgent: 'user', toAgent: targetAgentId, content, type: 'human', timestamp: Date.now(), round: this.round })
     // If the main loop has already exited, resume it to process this message
     if (!this.loopRunning && !this.aborted) {
       coord.setRunning(true)
@@ -228,6 +186,12 @@ export class AgentRunner {
   }
 
   // ── Private helpers ──────────────────────────────────────────────────────────
+
+  /** Route a message through the coordinator and emit it to the UI in one call. */
+  private emit(msg: Omit<Message, 'id'>): void {
+    const id = coord.routeMessage(msg)
+    this.cb.onMessage({ ...msg, id })
+  }
 
   private async runAgentTurn(agent: AgentConfig, round: number): Promise<void> {
     const allMsgs = coord.getMessagesFor(agent.id)
@@ -273,23 +237,7 @@ export class AgentRunner {
             const summary = e.record.isError
               ? `✖ ${e.record.name} failed: ${e.record.result}`
               : `🔧 ${e.record.name}(${JSON.stringify(e.record.args)}) → ${e.record.result.slice(0, 120)}`
-            const msgId = coord.routeMessage({
-              fromAgent: agent.id,
-              toAgent: 'system',
-              content: summary,
-              type: 'system',
-              timestamp: Date.now(),
-              round,
-            })
-            this.cb.onMessage({
-              id: msgId,
-              fromAgent: agent.id,
-              toAgent: 'system',
-              content: summary,
-              type: 'system',
-              timestamp: Date.now(),
-              round,
-            })
+            this.emit({ fromAgent: agent.id, toAgent: 'system', content: summary, type: 'system', timestamp: Date.now(), round })
           },
         )
       } else {
@@ -317,23 +265,7 @@ export class AgentRunner {
           this.cb.onLog(`⚠ ${agent.name} tried to message unknown agent "${outMsg.to}" — skipped`)
           continue
         }
-        const msgId = coord.routeMessage({
-          fromAgent: agent.id,
-          toAgent: target.id,
-          content: outMsg.content,
-          type: 'message',
-          timestamp: Date.now(),
-          round,
-        })
-        this.cb.onMessage({
-          id: msgId,
-          fromAgent: agent.id,
-          toAgent: target.id,
-          content: outMsg.content,
-          type: 'message',
-          timestamp: Date.now(),
-          round,
-        })
+        this.emit({ fromAgent: agent.id, toAgent: target.id, content: outMsg.content, type: 'message', timestamp: Date.now(), round })
       }
 
       const newStatus: AgentStatus = parsed.done ? 'done' : 'waiting'
@@ -348,23 +280,7 @@ export class AgentRunner {
       coord.updateAgentStatus(agent.id, 'error')
       this.cb.onStatusUpdate(agent.id, 'error')
 
-      const errId = coord.routeMessage({
-        fromAgent: agent.id,
-        toAgent: 'user',
-        content: `Error: ${msg}`,
-        type: 'error',
-        timestamp: Date.now(),
-        round,
-      })
-      this.cb.onMessage({
-        id: errId,
-        fromAgent: agent.id,
-        toAgent: 'user',
-        content: `Error: ${msg}`,
-        type: 'error',
-        timestamp: Date.now(),
-        round,
-      })
+      this.emit({ fromAgent: agent.id, toAgent: 'user', content: `Error: ${msg}`, type: 'error', timestamp: Date.now(), round })
     }
   }
 
