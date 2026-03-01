@@ -2,6 +2,7 @@ import { defaultAgents, agentsForMode, BUILTIN_MODES } from './types'
 import type { AgentConfig, AgentState, AppMode, CustomMode, Message, ModeInfo, Settings } from './types'
 import { DEFAULT_SETTINGS } from './types'
 import { AgentRunner } from './agentRunner'
+import { unloadOllamaModels } from './api'
 import { projectFS } from './filesystem'
 import { DEV_TOOLS } from './tools'
 import { isWebGPUAvailable, getLoadedModel } from './webllm'
@@ -31,6 +32,24 @@ function saveSettings(s: Settings) { lsSet('gremlin_settings', s) }
 
 function loadMode(): AppMode  { return ls<AppMode>('gremlin_mode', 'general') }
 function saveMode(m: AppMode) { lsSet('gremlin_mode', m) }
+
+// ── Builtin preset versioning ────────────────────────────────────────────────
+// Bump this whenever builtin mode agents are updated. On load, any builtin mode
+// whose cached agents are from an older version gets reset to the new preset.
+const BUILTIN_AGENTS_VERSION = 2
+const VERSION_KEY = 'gremlin_builtin_agents_version'
+
+function migrateBuiltinAgents() {
+  const stored = ls(VERSION_KEY, 0)
+  if (stored >= BUILTIN_AGENTS_VERSION) return
+  for (const mode of BUILTIN_MODES) {
+    lsDel(`gremlin_agents_${mode.id}`)
+  }
+  lsSet(VERSION_KEY, BUILTIN_AGENTS_VERSION)
+}
+
+// Run migration on module load — before any agent configs are read
+migrateBuiltinAgents()
 
 function loadAgentsForMode(mode: AppMode, customModes: CustomMode[]): AgentConfig[] {
   return ls(`gremlin_agents_${mode}`, agentsForMode(mode, customModes))
@@ -79,6 +98,11 @@ function clearPersistedSession() {
   lsDel(SESSION_KEY)
 }
 
+// ── Limits ───────────────────────────────────────────────────────────────────
+
+const MAX_MESSAGES = 2000
+const MAX_LOGS     = 500
+
 // ── Store ─────────────────────────────────────────────────────────────────────
 
 class GremlinStore {
@@ -123,9 +147,28 @@ class GremlinStore {
   showModeCreate  = $state<boolean>(false)
 
   private runner: AgentRunner | null = null
+  private saveTimer: ReturnType<typeof setTimeout> | null = null
 
-  // ── Session save helper ───────────────────────────────────────────────────
+  // ── Session save helper (debounced — one write per second max) ─────────
   private saveSession() {
+    if (this.saveTimer) return
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null
+      persistSession({
+        messages:    this.messages,
+        logs:        this.logs,
+        output:      this.output,
+        agentStates: this.agentStates,
+      })
+    }, 1_000)
+  }
+
+  /** Flush any pending debounced save immediately. */
+  private flushSession() {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer)
+      this.saveTimer = null
+    }
     persistSession({
       messages:    this.messages,
       logs:        this.logs,
@@ -169,6 +212,19 @@ class GremlinStore {
     this.appMode = id
     saveMode(id)
     this.agentConfigs = [...newMode.agents]
+    this.clearSession()
+  }
+
+  createModeWithAgents(name: string, icon: string, description: string, agents: AgentConfig[]) {
+    const id = `custom_${Date.now()}`
+    const newMode: CustomMode = { id, name, icon: icon || '★', description: description || 'Custom mode', builtin: false, agents: [...agents] }
+    this.customModes = [...this.customModes, newMode]
+    saveCustomModes(this.customModes)
+    saveAgentsForMode(this.appMode, this.agentConfigs)
+    this.appMode = id
+    saveMode(id)
+    this.agentConfigs = [...agents]
+    saveAgentsForMode(id, agents)
     this.clearSession()
   }
 
@@ -236,6 +292,7 @@ class GremlinStore {
 
   // ── Session ───────────────────────────────────────────────────────────────
   clearSession() {
+    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null }
     this.messages    = []
     this.logs        = []
     this.output      = ''
@@ -250,14 +307,20 @@ class GremlinStore {
     clearPersistedSession()
   }
 
-  // ── Private session mutation helpers (each saves to localStorage) ─────────
+  // ── Private session mutation helpers (debounced save) ────────────────────
   private addMessage(msg: Message) {
-    this.messages = [...this.messages, msg]
+    this.messages.push(msg)
+    if (this.messages.length > MAX_MESSAGES) {
+      this.messages = this.messages.slice(-MAX_MESSAGES)
+    }
     this.saveSession()
   }
 
   private addLog(text: string) {
-    this.logs = [...this.logs, text]
+    this.logs.push(text)
+    if (this.logs.length > MAX_LOGS) {
+      this.logs = this.logs.slice(-MAX_LOGS)
+    }
     this.saveSession()
   }
 
@@ -267,9 +330,10 @@ class GremlinStore {
   }
 
   private updateAgentState(agentId: string, patch: Partial<AgentState>) {
-    this.agentStates = this.agentStates.map((a) =>
-      a.id === agentId ? { ...a, ...patch } : a,
-    )
+    const idx = this.agentStates.findIndex((a) => a.id === agentId)
+    if (idx !== -1) {
+      this.agentStates[idx] = { ...this.agentStates[idx], ...patch }
+    }
     this.saveSession()
   }
 
@@ -328,21 +392,31 @@ class GremlinStore {
           this.isRunning      = false
           this.webllmProgress = null
           this.syncAgentStates()
-          this.saveSession()
+          this.flushSession()
+          this.releaseModels()
         },
       }, tools)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.addLog(`✖ Fatal: ${msg}`)
       this.isRunning = false
+      this.releaseModels()
     }
   }
 
   stopRun() {
     this.runner?.abort()
+    this.runner = null
     this.isRunning = false
     coord.setRunning(false)
-    this.saveSession()
+    this.flushSession()
+    this.releaseModels()
+  }
+
+  /** Unload all Ollama models (global + per-agent overrides). Logs on failure. */
+  private async releaseModels() {
+    const err = await unloadOllamaModels(this.settings, this.agentConfigs)
+    if (err) this.addLog(`⚠ ${err}`)
   }
 
   injectHumanMessage(agentId: string, content: string) {
@@ -354,10 +428,12 @@ class GremlinStore {
   private syncAgentStates() {
     if (!this.wasmReady) return
     const wasmAgents = coord.getAgents()
-    this.agentStates = this.agentStates.map((a) => {
-      const w = wasmAgents.find((wa) => wa.id === a.id)
-      return w ? { ...a, messageCount: w.messageCount, unreadCount: w.unreadCount } : a
-    })
+    for (let i = 0; i < this.agentStates.length; i++) {
+      const w = wasmAgents.find((wa) => wa.id === this.agentStates[i].id)
+      if (w) {
+        this.agentStates[i] = { ...this.agentStates[i], messageCount: w.messageCount, unreadCount: w.unreadCount }
+      }
+    }
   }
 }
 

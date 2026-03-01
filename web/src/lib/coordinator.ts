@@ -98,9 +98,10 @@ function toMessage(m: RawMessage): Message {
 }
 
 export function routeMessage(msg: Omit<Message, 'id'>): string {
-  return wasm().route_message(
+  const id = crypto.randomUUID()
+  wasm().route_message(
     JSON.stringify({
-      id: '',
+      id,
       from_agent: msg.fromAgent,
       to_agent: msg.toAgent,
       content: msg.content,
@@ -109,6 +110,7 @@ export function routeMessage(msg: Omit<Message, 'id'>): string {
       round: msg.round,
     }),
   )
+  return id
 }
 
 export function getMessagesFor(agentId: string): Message[] {

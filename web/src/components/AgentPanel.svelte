@@ -1,6 +1,7 @@
 <!-- Agent detail panel: shows conversation history + human-in-the-loop input -->
 <script lang="ts">
   import type { AgentState, Message } from '../lib/types'
+  import { PROVIDERS } from '../lib/types'
   import { store } from '../lib/store.svelte'
   import { tick } from 'svelte'
 
@@ -50,6 +51,15 @@
     })
   }
 
+  const modelOptions = $derived(
+    PROVIDERS.find((p) => p.format === store.settings.apiFormat && p.id !== 'custom')?.models ?? []
+  )
+
+  function setModel(model: string) {
+    const cfg = store.agentConfigs.find((a) => a.id === agent.id)
+    if (cfg) store.upsertAgent({ ...cfg, model: model || undefined })
+  }
+
   function sendHuman() {
     const content = humanInput.trim()
     if (!content) return
@@ -90,6 +100,17 @@
     </div>
 
     <div class="human-input-section">
+      <div class="model-row">
+        <span class="section-label" style="padding:0">Model</span>
+        <select
+          class="model-input"
+          value={agent.model ?? ''}
+          onchange={(e) => setModel((e.target as HTMLSelectElement).value)}
+        >
+          <option value="">Global: {store.settings.model || 'none'}</option>
+          {#each modelOptions as m}<option value={m}>{m}</option>{/each}
+        </select>
+      </div>
       <div class="section-label">Send direct message to {agent.name}</div>
       <div class="input-row">
         <textarea
@@ -223,6 +244,19 @@
     gap: 5px;
     border-top: 1px solid var(--border);
     padding-top: 8px;
+  }
+
+  .model-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  .model-input {
+    flex: 1;
+    font-size: 12px;
+    padding: 4px 8px;
+    height: auto;
   }
 
   .input-row {

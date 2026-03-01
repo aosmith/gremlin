@@ -9,7 +9,10 @@
   }
   const { messages, agents, logs }: Props = $props()
 
+  const MSG_TRUNCATE = 500
+
   let scrollEl = $state<HTMLDivElement | undefined>(undefined)
+  let expanded = $state(new Set<string>())
 
   const agentMap = $derived(new Map(agents.map((a) => [a.id, a])))
 
@@ -63,7 +66,11 @@
           <span class="agent-name" style="color: {agentColor(msg.toAgent)}">{agentName(msg.toAgent)}</span>
         </span>
         <span class="badge {msg.type}">{msg.type}</span>
-        <div class="content">{msg.content}</div>
+        {#if msg.content.length > MSG_TRUNCATE && !expanded.has(msg.id)}
+          <div class="content">{msg.content.slice(0, MSG_TRUNCATE)}… <button class="expand-link" onclick={() => { expanded.add(msg.id); expanded = expanded }}>show more</button></div>
+        {:else}
+          <div class="content">{msg.content}</div>
+        {/if}
       </div>
     {/each}
 
@@ -197,5 +204,15 @@
   .log-line {
     font-size: 11px;
     color: var(--text-dim);
+  }
+
+  .expand-link {
+    background: none;
+    border: none;
+    color: var(--accent);
+    cursor: pointer;
+    font-size: inherit;
+    padding: 0;
+    text-decoration: underline;
   }
 </style>

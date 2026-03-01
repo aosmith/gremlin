@@ -89,8 +89,13 @@ impl Coordinator {
         let mut msg: WasmMessage = serde_json::from_str(msg_json)
             .map_err(|e| JsValue::from_str(&format!("parse error: {}", e)))?;
 
-        self.message_counter += 1;
-        let id = format!("msg_{}", self.message_counter);
+        // Use caller-supplied ID (e.g. UUID) if provided; otherwise fall back to counter
+        let id = if msg.id.is_empty() {
+            self.message_counter += 1;
+            format!("msg_{}", self.message_counter)
+        } else {
+            msg.id.clone()
+        };
         msg.id = id.clone();
 
         // Increment sender's outgoing count

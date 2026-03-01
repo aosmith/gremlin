@@ -33,6 +33,19 @@
   // Right panel: prefer code viewer in engineering mode when a file is selected
   const showCodeViewer = $derived(isEngineering && store.selectedFile !== null)
   const showAgentPanel = $derived(selectedAgent !== null && !showCodeViewer)
+
+  // Follow-up reply
+  let replyText = $state('')
+
+  function sendReply() {
+    const text = replyText.trim()
+    if (!text) return
+    const orchestrator = store.agentConfigs.find((a) => a.role === 'orchestrator')
+    if (!orchestrator) return
+    replyText = ''
+    store.output = ''
+    store.injectHumanMessage(orchestrator.id, text)
+  }
 </script>
 
 <!-- ── Modals ── -->
@@ -300,6 +313,20 @@
         >✕</button>
       </div>
       <div class="output-body">{store.output}</div>
+      <div class="reply-bar">
+        <input
+          class="reply-input"
+          type="text"
+          placeholder="Reply — ask a follow-up or give feedback…"
+          bind:value={replyText}
+          onkeydown={(e) => e.key === 'Enter' && sendReply()}
+        />
+        <button
+          class="primary reply-btn"
+          onclick={sendReply}
+          disabled={!replyText.trim()}
+        >Reply</button>
+      </div>
     </div>
   {/if}
 </div>
@@ -674,5 +701,35 @@
     white-space: pre-wrap;
     word-break: break-word;
     color: var(--color-text);
+  }
+
+  .reply-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px 10px;
+    border-top: 1px solid var(--glass-border);
+    position: sticky;
+    bottom: 0;
+    background: inherit;
+  }
+  .reply-input {
+    flex: 1;
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius);
+    color: var(--color-text);
+    font-size: 13px;
+    padding: 7px 12px;
+    outline: none;
+    transition: all var(--t-fast);
+  }
+  .reply-input:focus {
+    background: var(--glass-tinted);
+    border-color: var(--glass-tinted-border);
+    box-shadow: 0 0 0 2px rgba(63,185,80,0.10);
+  }
+  .reply-btn {
+    flex-shrink: 0;
   }
 </style>

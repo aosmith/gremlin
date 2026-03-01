@@ -1,4 +1,5 @@
 import type { LLMMessage, Settings } from './types'
+import { PROVIDERS } from './types'
 import type { OAITool, ToolCallRecord } from './tools'
 import { toAnthropicTools, executeTool } from './tools'
 import { callWebLLM } from './webllm'
@@ -340,6 +341,47 @@ async function callGemini(
 }
 
 // ── Model discovery ───────────────────────────────────────────────────────────
+
+/**
+ * Tell Ollama to unload model(s) from memory immediately.
+ * Detects Ollama by matching the provider endpoint (not a magic port number).
+ * Unloads the global model AND any per-agent model overrides.
+ * Returns a log string on failure, or null on success/no-op.
+ */
+const OLLAMA_ENDPOINT = PROVIDERS.find((p) => p.id === 'ollama')!.endpoint
+
+export async function unloadOllamaModels(
+  settings: Settings,
+  agents: Array<{ model?: string }> = [],
+): Promise<string | null> {
+  // Only act when the user is actually pointing at an Ollama server
+  if (!settings.apiEndpoint.replace(/\/$/, '').startsWith(OLLAMA_ENDPOINT.replace(/\/v1.*$/, ''))) return null
+
+  const base = settings.apiEndpoint.replace(/\/v1.*$/, '')
+  const models = new Set<string>()
+  if (settings.model) models.add(settings.model)
+  for (const a of agents) {
+    if (a.model?.trim()) models.add(a.model.trim())
+  }
+  if (models.size === 0) return null
+
+  const errors: string[] = []
+  await Promise.all([...models].map(async (model) => {
+    try {
+      const resp = await fetch(`${base}/api/generate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model, keep_alive: 0 }),
+        signal: AbortSignal.timeout(10_000),
+      })
+      if (!resp.ok) errors.push(`${model}: HTTP ${resp.status}`)
+    } catch (err) {
+      errors.push(`${model}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }))
+
+  return errors.length > 0 ? `Failed to unload: ${errors.join('; ')}` : null
+}
 
 export async function fetchOllamaModels(baseUrl: string): Promise<string[]> {
   const base = baseUrl.replace(/\/v1.*$/, '')

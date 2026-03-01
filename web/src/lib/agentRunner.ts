@@ -28,6 +28,9 @@ export interface RunnerCallbacks {
   onDone: () => void
 }
 
+/** Max LLM messages kept per agent (20 = 10 user/assistant turn pairs). */
+const MAX_HISTORY_PER_AGENT = 20
+
 export class AgentRunner {
   private configs = new Map<string, AgentConfig>()
   private histories = new Map<string, LLMMessage[]>()
@@ -45,6 +48,7 @@ export class AgentRunner {
   abort() {
     this.aborted = true
     this.abortController.abort()
+    this.histories.clear()
   }
 
   async run(
@@ -254,12 +258,9 @@ export class AgentRunner {
         )
       }
 
-      // Persist conversation history
-      this.histories.set(agent.id, [
-        ...history,
-        { role: 'user', content: userContent },
-        { role: 'assistant', content: response },
-      ])
+      // Persist conversation history (pruned to last N messages)
+      const updated: LLMMessage[] = [...history, { role: 'user', content: userContent }, { role: 'assistant', content: response }]
+      this.histories.set(agent.id, updated.length > MAX_HISTORY_PER_AGENT ? updated.slice(-MAX_HISTORY_PER_AGENT) : updated)
 
       const parsed = this.parseResponse(response)
 
