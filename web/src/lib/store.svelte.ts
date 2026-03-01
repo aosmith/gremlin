@@ -44,15 +44,28 @@ function saveCustomModes(modes: CustomMode[])  { lsSet('gremlin_custom_modes', m
 
 // ── Session persistence ───────────────────────────────────────────────────────
 
+// Task is stored separately so clearSession() can never accidentally wipe it
+const TASK_KEY    = 'gremlin_task'
+const SESSION_KEY = 'gremlin_session'
+const HISTORY_KEY = 'gremlin_task_history'
+const MAX_HISTORY = 50
+
+function loadPersistedTask(): string    { return ls(TASK_KEY, '') }
+function savePersistedTask(t: string)   { lsSet(TASK_KEY, t) }
+function loadTaskHistory(): string[]    { return ls(HISTORY_KEY, []) }
+function pushTaskHistory(t: string) {
+  const trimmed = t.trim()
+  if (!trimmed) return
+  const h = loadTaskHistory().filter((x) => x !== trimmed)
+  lsSet(HISTORY_KEY, [trimmed, ...h].slice(0, MAX_HISTORY))
+}
+
 interface PersistedSession {
-  task: string
   messages: Message[]
   logs: string[]
   output: string
   agentStates: AgentState[]
 }
-
-const SESSION_KEY = 'gremlin_session'
 
 function loadPersistedSession(): PersistedSession | null {
   return ls<PersistedSession | null>(SESSION_KEY, null)
@@ -77,7 +90,6 @@ class GremlinStore {
 
   // ── Session state (restored from localStorage on load) ────────────────────
   private _session: PersistedSession = loadPersistedSession() ?? {
-    task: '',
     messages: [],
     logs: [],
     output: '',
@@ -88,7 +100,8 @@ class GremlinStore {
   messages     = $state<Message[]>(this._session.messages)
   logs         = $state<string[]>(this._session.logs)
   output       = $state<string>(this._session.output)
-  task         = $state<string>(this._session.task)
+  task         = $state<string>(loadPersistedTask())
+  taskHistory  = $state<string[]>(loadTaskHistory())
 
   isRunning    = $state<boolean>(false)   // never true after a refresh
   wasmReady    = $state<boolean>(false)
@@ -115,7 +128,6 @@ class GremlinStore {
   // ── Session save helper ───────────────────────────────────────────────────
   private saveSession() {
     persistSession({
-      task:        this.task,
       messages:    this.messages,
       logs:        this.logs,
       output:      this.output,
@@ -264,7 +276,7 @@ class GremlinStore {
 
   /** Called from the UI on every task input change to keep localStorage in sync. */
   saveTask() {
-    this.saveSession()
+    savePersistedTask(this.task)
   }
 
   async startRun() {
@@ -274,9 +286,9 @@ class GremlinStore {
       return
     }
 
+    pushTaskHistory(this.task)
+    this.taskHistory = loadTaskHistory()
     this.clearSession()
-    // Save the task that is being run
-    lsSet('gremlin_session', { task: this.task, messages: [], logs: [], output: '', agentStates: this.agentStates })
 
     this.isRunning       = true
     this.webllmProgress  = null

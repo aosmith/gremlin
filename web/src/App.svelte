@@ -70,6 +70,7 @@
         <input
           class="task-input"
           type="text"
+          list="task-history"
           placeholder="Enter a task for the agent swarm…  (Enter to run)"
           value={store.task}
           disabled={store.isRunning}
@@ -79,6 +80,11 @@
           }}
           onkeydown={(e) => e.key === 'Enter' && !store.isRunning && store.settings.model.trim() && store.startRun()}
         />
+        <datalist id="task-history">
+          {#each store.taskHistory as t}
+            <option value={t}>{t}</option>
+          {/each}
+        </datalist>
       </div>
 
       <!-- Controls -->
