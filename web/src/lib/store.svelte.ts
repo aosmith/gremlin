@@ -305,6 +305,9 @@ class GremlinStore {
         onStatusUpdate: (agentId, status) => {
           this.updateAgentState(agentId, { status })
         },
+        onRound: (round) => {
+          this.currentRound = round
+        },
         onLog: (text) => {
           this.addLog(text)
         },
@@ -344,7 +347,9 @@ class GremlinStore {
   }
 
   injectHumanMessage(agentId: string, content: string) {
-    this.runner?.injectHumanMessage(agentId, content, this.currentRound)
+    if (!this.runner) return
+    this.isRunning = true
+    this.runner.injectHumanMessage(agentId, content)
   }
 
   private syncAgentStates() {

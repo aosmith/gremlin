@@ -22,6 +22,7 @@ export interface RunnerCallbacks {
   onStatusUpdate: (agentId: string, status: AgentStatus) => void
   onLog: (text: string) => void
   onOutput: (output: string) => void
+  onRound?: (round: number) => void
   onToolCall?: (e: ToolCallEvent) => void
   onProgress?: ProgressCallback   // WebLLM model-load progress
   onDone: () => void
@@ -36,6 +37,9 @@ export class AgentRunner {
   private cb!: RunnerCallbacks
   private tools: OAITool[] = []
   private aborted = false
+  private loopRunning = false
+  private agents: AgentConfig[] = []
+  private round = 0
 
   abort() {
     this.aborted = true
@@ -52,6 +56,8 @@ export class AgentRunner {
     this.settings = settings
     this.cb = callbacks
     this.tools = tools
+    this.agents = agents
+    this.round = 0
     this.configs = new Map(agents.map((a) => [a.id, a]))
     this.histories = new Map(agents.map((a) => [a.id, []]))
     this.processedCounts = new Map(agents.map((a) => [a.id, 0]))
@@ -85,94 +91,115 @@ export class AgentRunner {
 
     callbacks.onLog(`Session started${tools.length ? ' (dev mode — file tools enabled)' : ''}`)
 
-    // ── Main loop ──────────────────────────────────────────────────────────────
-    for (let round = 1; round <= settings.maxRounds; round++) {
-      if (this.aborted) break
-
-      const pending = agents.filter((a) => {
-        const total = coord.getMessageCountFor(a.id)
-        return total > (this.processedCounts.get(a.id) ?? 0)
-      })
-
-      if (pending.length === 0) {
-        callbacks.onLog('No pending messages — session complete')
-        break
-      }
-
-      callbacks.onLog(`Round ${round}: running ${pending.map((a) => a.name).join(', ')}`)
-
-      // Run all agents with pending messages in parallel
-      await Promise.all(pending.map((a) => this.runAgentTurn(a, round)))
-
-      if (this.aborted) break
-
-      // Check if all workers are done so we can prompt the synthesizer
-      const workers = agents.filter((a) => a.role === 'worker' || a.role === 'custom')
-      const synthesizer = agents.find((a) => a.role === 'synthesizer')
-
-      if (workers.length > 0 && synthesizer) {
-        const allWorkersDone = workers.every(
-          (w) => coord.getAgentStatus(w.id) === 'done' || coord.getAgentStatus(w.id) === 'error',
-        )
-        const synthStatus = coord.getAgentStatus(synthesizer.id)
-
-        if (allWorkersDone && synthStatus !== 'done') {
-          // Workers are all done but synthesizer hasn't had a message yet — nudge it
-          const workerSummaries = workers.map((w) => {
-            const msgs = coord.getMessagesFor(synthesizer.id).filter((m) => m.fromAgent === w.id)
-            if (msgs.length > 0) return null // already messaged synthesizer
-            const hist = this.histories.get(w.id) ?? []
-            const lastAssistant = [...hist].reverse().find((m) => m.role === 'assistant')
-            return lastAssistant ? `[${w.name}]: ${lastAssistant.content}` : null
-          })
-
-          const unseenSummaries = workerSummaries.filter(Boolean)
-          if (unseenSummaries.length > 0) {
-            const nudgeId = coord.routeMessage({
-              fromAgent: 'system',
-              toAgent: synthesizer.id,
-              content:
-                'All workers have completed. Please synthesize their findings:\n\n' +
-                unseenSummaries.join('\n\n'),
-              type: 'system',
-              timestamp: Date.now(),
-              round,
-            })
-            callbacks.onMessage({
-              id: nudgeId,
-              fromAgent: 'system',
-              toAgent: synthesizer.id,
-              content:
-                'All workers have completed. Please synthesize their findings:\n\n' +
-                unseenSummaries.join('\n\n'),
-              type: 'system',
-              timestamp: Date.now(),
-              round,
-            })
-          }
-        }
-
-        if (allWorkersDone && synthStatus === 'done') {
-          callbacks.onLog('All agents done')
-          break
-        }
-      }
-
-      // If there are no workers (single-agent mode) and orchestrator is done, stop
-      if (workers.length === 0 && !synthesizer) {
-        const allDone = agents.every(
-          (a) => coord.getAgentStatus(a.id) === 'done' || coord.getAgentStatus(a.id) === 'error',
-        )
-        if (allDone) break
-      }
-    }
+    await this.runLoop()
 
     coord.setRunning(false)
     callbacks.onDone()
   }
 
+  // ── Core loop — shared between initial run and human-message resumption ──────
+  private async runLoop(): Promise<void> {
+    if (this.loopRunning) return   // already running, the next iteration will pick it up
+    this.loopRunning = true
+
+    const agents = this.agents
+
+    try {
+      while (!this.aborted) {
+        this.round++
+        if (this.round > this.settings.maxRounds) break
+
+        const pending = agents.filter((a) => {
+          const total = coord.getMessageCountFor(a.id)
+          return total > (this.processedCounts.get(a.id) ?? 0)
+        })
+
+        if (pending.length === 0) {
+          this.cb.onLog('No pending messages — session complete')
+          break
+        }
+
+        this.cb.onLog(`Round ${this.round}: running ${pending.map((a) => a.name).join(', ')}`)
+        this.cb.onRound?.(this.round)
+
+        await Promise.all(pending.map((a) => this.runAgentTurn(a, this.round)))
+
+        if (this.aborted) break
+
+        // Check if all workers are done so we can prompt the synthesizer
+        const workers = agents.filter((a) => a.role === 'worker' || a.role === 'custom')
+        const synthesizer = agents.find((a) => a.role === 'synthesizer')
+
+        if (workers.length > 0 && synthesizer) {
+          const allWorkersDone = workers.every(
+            (w) => coord.getAgentStatus(w.id) === 'done' || coord.getAgentStatus(w.id) === 'error',
+          )
+          const synthStatus = coord.getAgentStatus(synthesizer.id)
+
+          if (allWorkersDone && synthStatus !== 'done') {
+            const workerSummaries = workers.map((w) => {
+              const msgs = coord.getMessagesFor(synthesizer.id).filter((m) => m.fromAgent === w.id)
+              if (msgs.length > 0) return null
+              const hist = this.histories.get(w.id) ?? []
+              const lastAssistant = [...hist].reverse().find((m) => m.role === 'assistant')
+              return lastAssistant ? `[${w.name}]: ${lastAssistant.content}` : null
+            })
+
+            const unseenSummaries = workerSummaries.filter(Boolean)
+            if (unseenSummaries.length > 0) {
+              const nudgeId = coord.routeMessage({
+                fromAgent: 'system',
+                toAgent: synthesizer.id,
+                content: 'All workers have completed. Please synthesize their findings:\n\n' + unseenSummaries.join('\n\n'),
+                type: 'system',
+                timestamp: Date.now(),
+                round: this.round,
+              })
+              this.cb.onMessage({
+                id: nudgeId,
+                fromAgent: 'system',
+                toAgent: synthesizer.id,
+                content: 'All workers have completed. Please synthesize their findings:\n\n' + unseenSummaries.join('\n\n'),
+                type: 'system',
+                timestamp: Date.now(),
+                round: this.round,
+              })
+            }
+          }
+
+          // Only exit when done AND no pending human messages remain
+          if (allWorkersDone && synthStatus === 'done') {
+            const anyPending = agents.some(
+              (a) => coord.getMessageCountFor(a.id) > (this.processedCounts.get(a.id) ?? 0),
+            )
+            if (!anyPending) {
+              this.cb.onLog('All agents done')
+              break
+            }
+          }
+        }
+
+        // Single-agent / orchestrator-only mode
+        if (workers.length === 0 && !agents.find((a) => a.role === 'synthesizer')) {
+          const allDone = agents.every(
+            (a) => coord.getAgentStatus(a.id) === 'done' || coord.getAgentStatus(a.id) === 'error',
+          )
+          if (allDone) {
+            const anyPending = agents.some(
+              (a) => coord.getMessageCountFor(a.id) > (this.processedCounts.get(a.id) ?? 0),
+            )
+            if (!anyPending) break
+          }
+        }
+      }
+    } finally {
+      this.loopRunning = false
+    }
+  }
+
   // ── Human-in-the-loop: inject a message into a running agent's inbox ────────
-  injectHumanMessage(targetAgentId: string, content: string, round: number): void {
+  injectHumanMessage(targetAgentId: string, content: string): void {
+    const round = this.round
     const msgId = coord.routeMessage({
       fromAgent: 'user',
       toAgent: targetAgentId,
@@ -190,6 +217,14 @@ export class AgentRunner {
       timestamp: Date.now(),
       round,
     })
+    // If the main loop has already exited, resume it to process this message
+    if (!this.loopRunning && !this.aborted) {
+      coord.setRunning(true)
+      this.runLoop().then(() => {
+        coord.setRunning(false)
+        this.cb?.onDone()
+      })
+    }
   }
 
   // ── Private helpers ──────────────────────────────────────────────────────────
