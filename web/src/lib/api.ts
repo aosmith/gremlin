@@ -138,7 +138,13 @@ function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[]) {
 
   return fetch(settings.apiEndpoint, { method: 'POST', headers, body: JSON.stringify(body) })
     .then((r) => {
-      if (!r.ok) return r.text().then((t) => { throw new Error(`API ${r.status}: ${t}`) })
+      if (!r.ok) return r.text().then((t) => {
+        // Ollama returns a plain error object when the model isn't installed
+        if (t.includes('not found') || t.includes('pull')) {
+          throw new Error(`Model "${settings.model}" is not installed. Run: ollama pull ${settings.model}`)
+        }
+        throw new Error(`API ${r.status}: ${t}`)
+      })
       return r
     })
 }

@@ -30,7 +30,7 @@
     selectedProviderId = p.id
     if (p.endpoint) draft.apiEndpoint = p.endpoint
     draft.apiFormat = p.format
-    if (p.defaultModel) draft.model = p.defaultModel
+    draft.model = p.defaultModel
     if (!p.requiresKey) draft.apiKey = draft.apiKey  // keep existing key if already set
     dynamicModels = []
     fetchStatus = 'idle'
@@ -141,7 +141,7 @@
         {:else if isLocal}
           <small>
             {selectedProviderId === 'ollama'
-              ? 'Run: ollama pull llama3.2 · then click ↺ Discover'
+              ? 'Click ↺ Discover to list installed models, or run: ollama pull <model>'
               : 'Start LM Studio server, then click ↺ Discover'}
           </small>
         {/if}
@@ -247,7 +247,7 @@
 
     <div class="modal-footer">
       <button class="ghost" onclick={onclose}>Cancel</button>
-      <button class="primary" onclick={save}>Save</button>
+      <button class="primary" onclick={save} disabled={!isWebLLM && !draft.model.trim()}>Save</button>
     </div>
   </div>
 </div>

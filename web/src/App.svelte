@@ -77,7 +77,7 @@
             store.task = (e.target as HTMLInputElement).value
             store.saveTask()
           }}
-          onkeydown={(e) => e.key === 'Enter' && !store.isRunning && store.startRun()}
+          onkeydown={(e) => e.key === 'Enter' && !store.isRunning && store.settings.model.trim() && store.startRun()}
         />
       </div>
 
@@ -114,8 +114,8 @@
           <button
             class="primary run-btn"
             onclick={() => store.startRun()}
-            disabled={!store.wasmReady || !store.task.trim()}
-            title="Run (Enter)"
+            disabled={!store.wasmReady || !store.task.trim() || !store.settings.model.trim()}
+            title={!store.settings.model.trim() ? 'No model selected — open Settings' : 'Run (Enter)'}
           >▶ Run</button>
         {/if}
       </div>

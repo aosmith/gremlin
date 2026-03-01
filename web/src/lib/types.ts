@@ -25,7 +25,7 @@ export const PROVIDERS: ProviderPreset[] = [
     format: 'openai',
     endpoint: 'http://localhost:11434/v1/chat/completions',
     requiresKey: false,
-    defaultModel: 'llama3.2',
+    defaultModel: '',
     models: [],    // populated dynamically from /api/tags
     description: 'Local — no key needed',
   },
@@ -227,7 +227,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   apiEndpoint: 'http://localhost:11434/v1/chat/completions',
   apiKey: '',
-  model: 'llama3.2',
+  model: '',
   apiFormat: 'openai',
   maxRounds: 8,
 }
