@@ -379,8 +379,10 @@ Rules:
 
   private parseResponse(raw: string): AgentResponse {
     try {
+      // Strip <think>...</think> blocks produced by reasoning models (DeepSeek R1, QwQ, etc.)
+      const noThink = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
       // Strip optional markdown fences
-      const stripped = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '')
+      const stripped = noThink.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '')
       const start = stripped.indexOf('{')
       const end = stripped.lastIndexOf('}')
       if (start !== -1 && end !== -1) {
