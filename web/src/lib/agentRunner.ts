@@ -314,8 +314,14 @@ export class AgentRunner {
         coord.updateAgentStatus(agent.id, newStatus)
         this.cb.onStatusUpdate(agent.id, newStatus)
 
-        if (parsed.done && parsed.result != null && agent.role === 'synthesizer') {
-          this.cb.onOutput(this.cleanOutput(parsed.result))
+        if (parsed.done && agent.role === 'synthesizer') {
+          const result = parsed.result ?? ''
+          const analysis = parsed.analysis ?? ''
+          // Use result if substantial, otherwise combine analysis + result
+          const output = result.length >= 200 ? result
+            : analysis && result ? `${analysis}\n\n---\n\n${result}`
+            : result || analysis || ''
+          if (output) this.cb.onOutput(this.cleanOutput(output))
         }
 
         return  // success — exit retry loop
@@ -385,12 +391,18 @@ Rules:
 • "messages"  — messages to send to other agents; use [] if none
 • "done"       — set true only when you have fully completed your task
 • "result"     — your final conclusion (set when done: true; null otherwise)
-• Reference agents by their ID (e.g. "worker_1") or name
+• ONLY message agents listed above — use their exact ID. Never invent agent names
 ${agent.role === 'synthesizer' ? `
 SYNTHESIZER INSTRUCTIONS — Your "result" field is shown directly to a human user.
 Write it as clear, well-structured Markdown prose — NOT JSON, NOT bullet-point dumps.
-Use headings, paragraphs, bold for emphasis, and lists where appropriate.
-Write for a human reader: explain findings, give actionable conclusions, and be concise.
+Use headings (##, ###), paragraphs, bold for emphasis, tables, and lists where appropriate.
+Write for a human reader: be COMPREHENSIVE and THOROUGH. Include:
+• Full analysis and reasoning, not just conclusions
+• Specific data points, evidence, and sources referenced by team members
+• Actionable recommendations with concrete details
+• Trade-offs, caveats, and areas of uncertainty
+• A structured breakdown — use multiple sections with headings
+Do NOT summarise briefly — the user wants depth. Aim for a complete, detailed report.
 Never put raw JSON, code fences around the whole result, or agent IDs in the result.
 ` : ''}`
   }
@@ -442,11 +454,24 @@ Never put raw JSON, code fences around the whole result, or agent IDs in the res
   }
 
   private resolveAgent(nameOrId: string): AgentConfig | undefined {
-    return (
-      this.configs.get(nameOrId) ??
-      Array.from(this.configs.values()).find(
-        (a) => a.name.toLowerCase() === nameOrId.toLowerCase(),
-      )
-    )
+    const key = nameOrId.toLowerCase().replace(/[\s_-]+/g, '')
+    const agents = Array.from(this.configs.values())
+
+    // Exact ID match
+    const byId = this.configs.get(nameOrId)
+    if (byId) return byId
+
+    // Exact name match (case-insensitive)
+    const byName = agents.find((a) => a.name.toLowerCase() === nameOrId.toLowerCase())
+    if (byName) return byName
+
+    // Fuzzy: normalized substring match on id or name
+    const bySubstring = agents.find((a) => {
+      const normId = a.id.toLowerCase().replace(/[\s_-]+/g, '')
+      const normName = a.name.toLowerCase().replace(/[\s_-]+/g, '')
+      return normId.includes(key) || key.includes(normId) ||
+             normName.includes(key) || key.includes(normName)
+    })
+    return bySubstring
   }
 }

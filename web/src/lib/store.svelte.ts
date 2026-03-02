@@ -637,6 +637,12 @@ class GremlinStore {
     this.runner = null
     this.isRunning = false
     coord.setRunning(false)
+    // Reset all non-idle agents to idle
+    for (let i = 0; i < this.agentStates.length; i++) {
+      if (this.agentStates[i].status !== 'idle' && this.agentStates[i].status !== 'done') {
+        this.agentStates[i] = { ...this.agentStates[i], status: 'idle' }
+      }
+    }
     this.flushSession()
     this.releaseModels()
   }
