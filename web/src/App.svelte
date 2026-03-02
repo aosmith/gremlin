@@ -11,6 +11,7 @@
   import FileTree from './components/FileTree.svelte'
   import CodeViewer from './components/CodeViewer.svelte'
   import NewModeModal from './components/NewModeModal.svelte'
+  import SessionHistory from './components/SessionHistory.svelte'
 
   // Configure marked for safe output
   marked.setOptions({ breaks: true, gfm: true })
@@ -301,6 +302,14 @@
     {/if}
   </div>
 
+  <!-- ── Restored session banner ── -->
+  {#if store.restoredSessionId}
+    <div class="restored-banner">
+      <span class="restored-text">Viewing past session</span>
+      <button class="ghost btn-sm" onclick={() => store.clearSession()}>Close</button>
+    </div>
+  {/if}
+
   <!-- ── Main workspace ── -->
   <div class="workspace">
 
@@ -326,6 +335,7 @@
               if (store.selectedAgentId) store.selectedFile = null
             }}
             onedit={() => (store.showAgentEdit = agent.id)}
+            onretry={() => store.retryAgent(agent.id)}
           />
         {/each}
 
@@ -347,6 +357,9 @@
           title="Restore default agents for this mode"
         >↺ Reset agents</button>
       </div>
+
+      <!-- Session history -->
+      <SessionHistory />
 
       <!-- File tree section (engineering mode only) -->
       {#if isEngineering && (store.projectDirName || store.writtenFiles.length > 0)}
@@ -684,6 +697,24 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* ── Restored session banner ────────────────────────────────────────────── */
+  .restored-banner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 4px 16px;
+    background: var(--glass-tinted);
+    border-bottom: 1px solid var(--glass-tinted-border);
+    flex-shrink: 0;
+  }
+  .restored-text {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-accent);
+    letter-spacing: 0.03em;
   }
 
   /* ── Workspace ─────────────────────────────────────────────────────────── */

@@ -6,8 +6,9 @@
     selected: boolean
     onclick: () => void
     onedit: () => void
+    onretry?: () => void
   }
-  const { agent, selected, onclick, onedit }: Props = $props()
+  const { agent, selected, onclick, onedit, onretry }: Props = $props()
 
 </script>
 
@@ -34,6 +35,13 @@
     <div class="meta">
       <span class="role">{agent.role}</span>
       <span class="status {agent.status}">{agent.status[0].toUpperCase() + agent.status.slice(1)}</span>
+      {#if agent.status === 'error' && onretry}
+        <button
+          class="retry-btn"
+          onclick={(e) => { e.stopPropagation(); onretry() }}
+          title="Retry this agent"
+        >Retry</button>
+      {/if}
     </div>
     <div class="stats mono">
       {#if agent.model}
@@ -128,6 +136,24 @@
   .status.waiting { color: var(--color-accent-2); }
   .status.done    { color: var(--color-accent); }
   .status.error   { color: var(--color-accent-err); }
+
+  .retry-btn {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid rgba(255,90,90,0.3);
+    background: rgba(255,90,90,0.08);
+    color: var(--color-accent-err);
+    cursor: pointer;
+    height: auto;
+    line-height: 1.4;
+    transition: all var(--t-fast);
+  }
+  .retry-btn:hover {
+    background: rgba(255,90,90,0.18);
+    border-color: rgba(255,90,90,0.5);
+  }
 
   .stats {
     font-size: 10px;

@@ -31,6 +31,10 @@ export interface RunnerCallbacks {
 /** Max LLM messages kept per agent (20 = 10 user/assistant turn pairs). */
 const MAX_HISTORY_PER_AGENT = 20
 
+/** Retry config for transient LLM errors (network failures, 429/5xx). */
+const MAX_RETRIES = 3
+const RETRY_BASE_MS = 2_000
+
 export class AgentRunner {
   private configs = new Map<string, AgentConfig>()
   private histories = new Map<string, LLMMessage[]>()
@@ -192,6 +196,37 @@ export class AgentRunner {
     }
   }
 
+  // ── Retry: re-run a failed agent's last turn ──────────────────────────────────
+  retryAgent(agentId: string): void {
+    const agent = this.configs.get(agentId)
+    if (!agent) return
+    const count = this.processedCounts.get(agentId) ?? 0
+    if (count === 0) return
+
+    // Roll back so the agent re-processes its last batch of messages
+    this.processedCounts.set(agentId, Math.max(0, count - 1))
+    coord.updateAgentStatus(agentId, 'waiting')
+    this.cb.onStatusUpdate(agentId, 'waiting')
+    this.cb.onLog(`Retrying ${agent.name}…`)
+
+    // Run the single agent turn directly (bypass runLoop to avoid maxRounds block)
+    coord.setRunning(true)
+    this.runAgentTurn(agent, this.round).then(() => {
+      // After the retry, resume the loop for any follow-on messages
+      // Give it headroom by resetting the round counter
+      this.round = Math.max(0, this.round - 2)
+      if (!this.aborted) {
+        this.runLoop().then(() => {
+          coord.setRunning(false)
+          this.cb?.onDone()
+        })
+      } else {
+        coord.setRunning(false)
+        this.cb?.onDone()
+      }
+    })
+  }
+
   // ── Private helpers ──────────────────────────────────────────────────────────
 
   /** Route a message through the coordinator and emit it to the UI in one call. */
@@ -228,65 +263,85 @@ export class AgentRunner {
       ? { ...this.settings, model: agent.model.trim() }
       : this.settings
 
-    try {
-      let response: string
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        let response: string
 
-      const signal = this.abortController.signal
-      if (this.tools.length > 0) {
-        response = await callLLMWithTools(
-          systemPrompt,
-          [...history, { role: 'user', content: userContent }],
-          agentSettings,
-          this.tools,
-          agent.id,
-          (e) => {
-            this.cb.onToolCall?.(e)
-            const summary = e.record.isError
-              ? `✖ ${e.record.name} failed: ${e.record.result}`
-              : `🔧 ${e.record.name}(${JSON.stringify(e.record.args)}) → ${e.record.result.slice(0, 120)}`
-            this.emit({ fromAgent: agent.id, toAgent: 'system', content: summary, type: 'system', timestamp: Date.now(), round })
-          },
-          signal,
-        )
-      } else {
-        response = await callLLM(
-          systemPrompt,
-          [...history, { role: 'user', content: userContent }],
-          agentSettings,
-          this.cb.onProgress,
-          signal,
-        )
-      }
-
-      // Persist conversation history (pruned to last N messages)
-      const updated: LLMMessage[] = [...history, { role: 'user', content: userContent }, { role: 'assistant', content: response }]
-      this.histories.set(agent.id, updated.length > MAX_HISTORY_PER_AGENT ? updated.slice(-MAX_HISTORY_PER_AGENT) : updated)
-
-      const parsed = this.parseResponse(response)
-
-      // Route outgoing messages
-      for (const outMsg of parsed.messages) {
-        const target = this.resolveAgent(outMsg.to)
-        if (!target) {
-          this.cb.onLog(`⚠ ${agent.name} tried to message unknown agent "${outMsg.to}" — skipped`)
-          continue
+        const signal = this.abortController.signal
+        if (this.tools.length > 0) {
+          response = await callLLMWithTools(
+            systemPrompt,
+            [...history, { role: 'user', content: userContent }],
+            agentSettings,
+            this.tools,
+            agent.id,
+            (e) => {
+              this.cb.onToolCall?.(e)
+              const summary = e.record.isError
+                ? `✖ ${e.record.name} failed: ${e.record.result}`
+                : `🔧 ${e.record.name}(${JSON.stringify(e.record.args)}) → ${e.record.result.slice(0, 120)}`
+              this.emit({ fromAgent: agent.id, toAgent: 'system', content: summary, type: 'system', timestamp: Date.now(), round })
+            },
+            signal,
+          )
+        } else {
+          response = await callLLM(
+            systemPrompt,
+            [...history, { role: 'user', content: userContent }],
+            agentSettings,
+            this.cb.onProgress,
+            signal,
+          )
         }
-        this.emit({ fromAgent: agent.id, toAgent: target.id, content: outMsg.content, type: 'message', timestamp: Date.now(), round })
-      }
 
-      const newStatus: AgentStatus = parsed.done ? 'done' : 'waiting'
-      coord.updateAgentStatus(agent.id, newStatus)
-      this.cb.onStatusUpdate(agent.id, newStatus)
+        // Persist conversation history (pruned to last N messages)
+        const updated: LLMMessage[] = [...history, { role: 'user', content: userContent }, { role: 'assistant', content: response }]
+        this.histories.set(agent.id, updated.length > MAX_HISTORY_PER_AGENT ? updated.slice(-MAX_HISTORY_PER_AGENT) : updated)
 
-      if (parsed.done && parsed.result != null && agent.role === 'synthesizer') {
-        this.cb.onOutput(this.cleanOutput(parsed.result))
+        const parsed = this.parseResponse(response)
+
+        // Route outgoing messages
+        for (const outMsg of parsed.messages) {
+          const target = this.resolveAgent(outMsg.to)
+          if (!target) {
+            this.cb.onLog(`⚠ ${agent.name} tried to message unknown agent "${outMsg.to}" — skipped`)
+            continue
+          }
+          this.emit({ fromAgent: agent.id, toAgent: target.id, content: outMsg.content, type: 'message', timestamp: Date.now(), round })
+        }
+
+        const newStatus: AgentStatus = parsed.done ? 'done' : 'waiting'
+        coord.updateAgentStatus(agent.id, newStatus)
+        this.cb.onStatusUpdate(agent.id, newStatus)
+
+        if (parsed.done && parsed.result != null && agent.role === 'synthesizer') {
+          this.cb.onOutput(this.cleanOutput(parsed.result))
+        }
+
+        return  // success — exit retry loop
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') return  // user stopped the run
+        if (this.aborted) return
+
+        const msg = err instanceof Error ? err.message : String(err)
+
+        if (attempt < MAX_RETRIES) {
+          const delay = RETRY_BASE_MS * Math.pow(2, attempt)
+          this.cb.onLog(`⚠ ${agent.name} failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}): ${msg} — retrying in ${(delay / 1000).toFixed(0)}s`)
+          this.cb.onStatusUpdate(agent.id, 'waiting')
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, delay)
+            // If aborted while waiting, resolve immediately
+            const onAbort = () => { clearTimeout(timer); resolve() }
+            this.abortController.signal.addEventListener('abort', onAbort, { once: true })
+          })
+          if (this.aborted) return
+        } else {
+          coord.updateAgentStatus(agent.id, 'error')
+          this.cb.onStatusUpdate(agent.id, 'error')
+          this.emit({ fromAgent: agent.id, toAgent: 'user', content: `Error after ${MAX_RETRIES + 1} attempts: ${msg}`, type: 'error', timestamp: Date.now(), round })
+        }
       }
-    } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') return  // user stopped the run
-      const msg = err instanceof Error ? err.message : String(err)
-      coord.updateAgentStatus(agent.id, 'error')
-      this.cb.onStatusUpdate(agent.id, 'error')
-      this.emit({ fromAgent: agent.id, toAgent: 'user', content: `Error: ${msg}`, type: 'error', timestamp: Date.now(), round })
     }
   }
 

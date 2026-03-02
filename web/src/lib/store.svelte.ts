@@ -98,6 +98,56 @@ function clearPersistedSession() {
   lsDel(SESSION_KEY)
 }
 
+// ── Session history persistence ──────────────────────────────────────────────
+
+const SESSION_HISTORY_KEY  = 'gremlin_session_history'
+const MAX_SESSION_HISTORY  = 25
+const ARCHIVED_MSG_LIMIT   = 200
+const ARCHIVED_LOG_LIMIT   = 100
+
+export interface SessionHistoryEntry {
+  id: string
+  task: string
+  mode: AppMode
+  modeIcon: string
+  modeName: string
+  timestamp: number
+  messageCount: number
+  hasOutput: boolean
+}
+
+export interface ArchivedSession {
+  task: string
+  mode: AppMode
+  modeName: string
+  modeIcon: string
+  timestamp: number
+  messages: Message[]
+  logs: string[]
+  output: string
+  agentStates: AgentState[]
+}
+
+function loadSessionHistory(): SessionHistoryEntry[] {
+  return ls(SESSION_HISTORY_KEY, [])
+}
+
+function saveSessionHistory(entries: SessionHistoryEntry[]) {
+  lsSet(SESSION_HISTORY_KEY, entries)
+}
+
+function loadArchivedSession(id: string): ArchivedSession | null {
+  return ls<ArchivedSession | null>(`gremlin_session_${id}`, null)
+}
+
+function saveArchivedSession(id: string, session: ArchivedSession) {
+  lsSet(`gremlin_session_${id}`, session)
+}
+
+function deleteArchivedSession(id: string) {
+  lsDel(`gremlin_session_${id}`)
+}
+
 // ── Output cleaning ──────────────────────────────────────────────────────────
 // LLMs return JSON with literal newlines in strings — fix them so JSON.parse works
 function fixJsonNewlines(text: string): string {
@@ -177,6 +227,11 @@ class GremlinStore {
   projectDirName = $state<string | null>(null)
   writtenFiles   = $state<string[]>([])
   selectedFile   = $state<string | null>(null)
+
+  // ── Session history ──────────────────────────────────────────────────────
+  sessionHistory     = $state<SessionHistoryEntry[]>(loadSessionHistory())
+  restoredSessionId  = $state<string | null>(null)
+  private _archived  = false
 
   // ── UI state ────────────────────────────────────────────────────────────
   selectedAgentId = $state<string | null>(null)
@@ -328,6 +383,116 @@ class GremlinStore {
     this.writtenFiles = await projectFS.getAllFilePaths()
   }
 
+  // ── Session history ──────────────────────────────────────────────────────
+
+  private archiveCurrentSession() {
+    if (this._archived) return
+    if (this.messages.length === 0 && !this.output) return
+    this._archived = true
+
+    const modeInfo = this.currentModeInfo
+    const now = Date.now()
+
+    const sessionData: ArchivedSession = {
+      task: this.task,
+      mode: this.appMode,
+      modeName: modeInfo.name,
+      modeIcon: modeInfo.icon,
+      timestamp: now,
+      messages: this.messages.slice(-ARCHIVED_MSG_LIMIT),
+      logs: this.logs.slice(-ARCHIVED_LOG_LIMIT),
+      output: this.output,
+      agentStates: this.agentStates.map((a) => ({ ...a, status: 'idle' as const })),
+    }
+
+    // If viewing a restored session, update it in-place instead of duplicating
+    if (this.restoredSessionId) {
+      const idx = this.sessionHistory.findIndex((e) => e.id === this.restoredSessionId)
+      if (idx !== -1) {
+        this.sessionHistory[idx] = {
+          ...this.sessionHistory[idx],
+          timestamp: now,
+          messageCount: this.messages.length,
+          hasOutput: !!this.output,
+        }
+        // Move to top of list
+        const updated = this.sessionHistory.splice(idx, 1)[0]
+        this.sessionHistory = [updated, ...this.sessionHistory]
+        saveSessionHistory(this.sessionHistory)
+        saveArchivedSession(this.restoredSessionId, sessionData)
+        return
+      }
+    }
+
+    // New session — create a fresh entry
+    const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+
+    const entry: SessionHistoryEntry = {
+      id,
+      task: this.task,
+      mode: this.appMode,
+      modeIcon: modeInfo.icon,
+      modeName: modeInfo.name,
+      timestamp: now,
+      messageCount: this.messages.length,
+      hasOutput: !!this.output,
+    }
+
+    let history = [entry, ...this.sessionHistory]
+    if (history.length > MAX_SESSION_HISTORY) {
+      const evicted = history.splice(MAX_SESSION_HISTORY)
+      for (const e of evicted) deleteArchivedSession(e.id)
+    }
+
+    this.sessionHistory = history
+    saveSessionHistory(history)
+    saveArchivedSession(id, sessionData)
+  }
+
+  restoreSession(id: string) {
+    if (this.isRunning) return
+    const archived = loadArchivedSession(id)
+    if (!archived) return
+
+    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null }
+
+    this.restoredSessionId = id
+    this._archived   = false
+    this.task        = archived.task
+    this.messages    = archived.messages
+    this.logs        = archived.logs
+    this.output      = archived.output
+    // Restore agent states but reset status to idle (no run is active)
+    this.agentStates = archived.agentStates.length > 0
+      ? archived.agentStates.map((a) => ({ ...a, status: 'idle' as const }))
+      : this.agentConfigs.map((cfg) => ({ ...cfg, status: 'idle' as const, messageCount: 0, unreadCount: 0 }))
+
+    // Persist so the session survives page reload
+    savePersistedTask(this.task)
+    persistSession({
+      messages:    this.messages,
+      logs:        this.logs,
+      output:      this.output,
+      agentStates: this.agentStates,
+    })
+
+    // Re-init WASM coordinator so follow-ups / re-runs work
+    if (this.wasmReady) {
+      coord.clearSession()
+      for (const cfg of this.agentConfigs) coord.addAgent(cfg)
+    }
+  }
+
+  deleteHistoryEntry(id: string) {
+    this.sessionHistory = this.sessionHistory.filter((e) => e.id !== id)
+    saveSessionHistory(this.sessionHistory)
+    deleteArchivedSession(id)
+    if (this.restoredSessionId === id) {
+      this.restoredSessionId = null
+      this.clearSession()
+    }
+  }
+
   // ── Session ───────────────────────────────────────────────────────────────
 
   /** Initialize WASM coordinator from restored session state (page load). */
@@ -356,6 +521,8 @@ class GremlinStore {
     this.logs        = []
     this.output      = ''
     this.currentRound = 0
+    this.restoredSessionId = null
+    this._archived   = false
     this.agentStates = this.agentConfigs.map((cfg) => ({
       ...cfg,
       status: 'idle',
@@ -408,6 +575,7 @@ class GremlinStore {
       return
     }
 
+    this.archiveCurrentSession()
     pushTaskHistory(this.task)
     this.taskHistory = loadTaskHistory()
     this.clearSession()
@@ -452,6 +620,7 @@ class GremlinStore {
           this.webllmProgress = null
           this.syncAgentStates()
           this.flushSession()
+          this.archiveCurrentSession()
           this.releaseModels()
         },
       }, tools)
@@ -482,6 +651,13 @@ class GremlinStore {
     if (!this.runner) return
     this.isRunning = true
     this.runner.injectHumanMessage(agentId, content)
+  }
+
+  retryAgent(agentId: string) {
+    if (!this.runner) return
+    this.isRunning = true
+    this.updateAgentState(agentId, { status: 'waiting' })
+    this.runner.retryAgent(agentId)
   }
 
   private syncAgentStates() {
