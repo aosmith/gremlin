@@ -2,6 +2,7 @@
 <script lang="ts">
   import type { AgentState, Message } from '../lib/types'
   import { PROVIDERS } from '../lib/types'
+  import { cleanContent } from '../lib/cleanContent'
   import { store } from '../lib/store.svelte'
   import { tick } from 'svelte'
 
@@ -94,7 +95,7 @@
             {/if}
             <span class="msg-time muted mono">{formatTime(msg.timestamp)}</span>
           </div>
-          <div class="msg-content">{msg.content}</div>
+          <div class="msg-content">{cleanContent(msg.content)}</div>
         </div>
       {/each}
     </div>

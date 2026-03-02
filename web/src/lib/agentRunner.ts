@@ -315,13 +315,8 @@ export class AgentRunner {
         this.cb.onStatusUpdate(agent.id, newStatus)
 
         if (parsed.done && agent.role === 'synthesizer') {
-          const result = parsed.result ?? ''
-          const analysis = parsed.analysis ?? ''
-          // Use result if substantial, otherwise combine analysis + result
-          const output = result.length >= 200 ? result
-            : analysis && result ? `${analysis}\n\n---\n\n${result}`
-            : result || analysis || ''
-          if (output) this.cb.onOutput(this.cleanOutput(output))
+          const output = this.formatSynthesizerOutput(parsed)
+          if (output) this.cb.onOutput(output)
         }
 
         return  // success — exit retry loop
@@ -392,6 +387,13 @@ Rules:
 • "done"       — set true only when you have fully completed your task
 • "result"     — your final conclusion (set when done: true; null otherwise)
 • ONLY message agents listed above — use their exact ID. Never invent agent names
+${agent.role === 'orchestrator' ? `
+ORCHESTRATOR INSTRUCTIONS — You are the team lead. You must NOT do all the work yourself.
+• On your FIRST turn, decompose the task and send specific assignments to each worker agent via "messages"
+• Set "done": false — you are NOT done until workers have reported back
+• Wait for worker responses before drawing conclusions
+• After receiving worker outputs, send a synthesis request to the synthesizer agent
+• Never set "done": true on your first turn` : ''}
 ${agent.role === 'synthesizer' ? `
 SYNTHESIZER INSTRUCTIONS — Your "result" field is shown directly to a human user.
 Write it as clear, well-structured Markdown prose — NOT JSON, NOT bullet-point dumps.
@@ -422,7 +424,7 @@ Never put raw JSON, code fences around the whole result, or agent IDs in the res
           messages: Array.isArray(parsed.messages) ? parsed.messages : [],
           done: Boolean(parsed.done),
           result: typeof parsed.result === 'string' ? parsed.result
-            : parsed.result != null ? JSON.stringify(parsed.result)
+            : parsed.result != null ? this.flattenResult(parsed.result)
             : null,
         }
       }
@@ -436,21 +438,47 @@ Never put raw JSON, code fences around the whole result, or agent IDs in the res
   /** Extract human-readable text from the synthesizer's result, which may be raw JSON. */
   private cleanOutput(raw: string): string {
     const trimmed = raw.trim()
-    // Try to detect JSON (the LLM sometimes wraps its result in JSON structure)
     if (trimmed.startsWith('{')) {
       try {
         const obj = JSON.parse(trimmed)
-        // If it looks like an agent response object, extract the meaningful parts
-        if (typeof obj.result === 'string') return obj.result
-        if (typeof obj.analysis === 'string') return obj.analysis
-        // Generic object — try to extract any string value that looks like prose
-        const values = Object.values(obj).filter((v): v is string => typeof v === 'string' && v.length > 20)
-        if (values.length > 0) return values.join('\n\n')
-      } catch {
-        // Not valid JSON, just return as-is
-      }
+        return this.flattenResult(obj)
+      } catch { /* not valid JSON */ }
     }
     return raw
+  }
+
+  /** Build the full output JSON string so the store's cleanOutput can format all fields. */
+  private formatSynthesizerOutput(parsed: AgentResponse): string {
+    // Pass the full parsed response as JSON — store's cleanOutput will format all fields
+    return JSON.stringify({
+      analysis: parsed.analysis || undefined,
+      messages: parsed.messages.length > 0
+        ? parsed.messages.map((m) => ({ to: this.configs.get(m.to)?.name ?? m.to, content: m.content }))
+        : undefined,
+      result: parsed.result || undefined,
+    })
+  }
+
+  /** Convert a non-string result (object/array) into readable prose. */
+  private flattenResult(val: unknown): string {
+    if (typeof val === 'string') return val
+    if (Array.isArray(val)) {
+      return val.map((v) => typeof v === 'string' ? v : this.flattenResult(v)).join('\n\n')
+    }
+    if (val && typeof val === 'object') {
+      const obj = val as Record<string, unknown>
+      // Extract known prose fields
+      const parts: string[] = []
+      for (const [key, v] of Object.entries(obj)) {
+        if (typeof v === 'string' && v.trim()) {
+          parts.push(v.trim())
+        } else if (Array.isArray(v)) {
+          parts.push(`**${key}**:\n${v.map((item) => typeof item === 'string' ? `- ${item}` : this.flattenResult(item)).join('\n')}`)
+        }
+      }
+      if (parts.length > 0) return parts.join('\n\n')
+    }
+    return JSON.stringify(val, null, 2)
   }
 
   private resolveAgent(nameOrId: string): AgentConfig | undefined {

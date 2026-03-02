@@ -169,7 +169,7 @@ function fixJsonNewlines(text: string): string {
   return out
 }
 
-/** If text looks like agent JSON, extract the human-readable result/analysis. */
+/** If text looks like agent JSON, format all fields as styled readable markdown. */
 function cleanOutput(raw: string): string {
   if (!raw) return raw
   const trimmed = raw.trim()
@@ -178,11 +178,40 @@ function cleanOutput(raw: string): string {
   if (start === -1 || end <= start) return raw
   try {
     const obj = JSON.parse(fixJsonNewlines(trimmed.slice(start, end + 1)))
-    if (typeof obj.result === 'string' && obj.result.trim()) return obj.result.trim()
-    if (typeof obj.analysis === 'string' && obj.analysis.trim()) return obj.analysis.trim()
-    const strings = Object.values(obj).filter((v): v is string => typeof v === 'string' && v.length > 20)
-    if (strings.length > 0) return strings.join('\n\n')
-  } catch { /* not parseable, return as-is */ }
+    const sections: string[] = []
+
+    // Analysis — main body
+    if (typeof obj.analysis === 'string' && obj.analysis.trim()) {
+      sections.push(cleanOutput(obj.analysis.trim()))
+    }
+
+    // Messages / directives
+    if (Array.isArray(obj.messages) && obj.messages.length > 0) {
+      const items = obj.messages
+        .filter((m: any) => m.to && m.content)
+        .map((m: any) => `| **${m.to}** | ${m.content} |`)
+      if (items.length > 0) {
+        sections.push(`### Directives\n\n| Agent | Action |\n|---|---|\n${items.join('\n')}`)
+      }
+    }
+
+    // Result — conclusion
+    if (typeof obj.result === 'string' && obj.result.trim()) {
+      const r = cleanOutput(obj.result.trim())
+      sections.push(`### Result\n\n${r}`)
+    }
+
+    if (sections.length > 0) return sections.join('\n\n---\n\n')
+  } catch { /* JSON parse failed — try regex fallback */ }
+  // Regex fallback for malformed JSON
+  const parts: string[] = []
+  const re = /"(\w+)"\s*:\s*"((?:[^"\\]|\\.)*)"/gs
+  let m
+  while ((m = re.exec(trimmed)) !== null) {
+    const val = m[2].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\').trim()
+    if (val) parts.push(val)
+  }
+  if (parts.length > 0) return parts.join('\n\n---\n\n')
   return raw
 }
 

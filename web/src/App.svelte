@@ -44,9 +44,9 @@
   let resultsDismissed = $state(false)
   const outputHtml = $derived(store.output ? marked.parse(store.output) as string : '')
 
-  // When output changes (new results come in), show the modal
+  // Show the results modal only when the run finishes with output (not mid-run)
   $effect(() => {
-    if (store.output) {
+    if (store.output && !store.isRunning) {
       showResultsModal = true
       resultsDismissed = false
     }

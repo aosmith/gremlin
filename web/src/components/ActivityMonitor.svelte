@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { AgentConfig, Message } from '../lib/types'
+  import { cleanContent } from '../lib/cleanContent'
   import { tick } from 'svelte'
 
   interface Props {
@@ -66,10 +67,10 @@
           <span class="agent-name" style="color: {agentColor(msg.toAgent)}">{agentName(msg.toAgent)}</span>
         </span>
         <span class="badge {msg.type}">{msg.type}</span>
-        {#if msg.content.length > MSG_TRUNCATE && !expanded.has(msg.id)}
-          <div class="content">{msg.content.slice(0, MSG_TRUNCATE)}… <button class="expand-link" onclick={() => { expanded.add(msg.id); expanded = expanded }}>show more</button></div>
+        {#if cleanContent(msg.content).length > MSG_TRUNCATE && !expanded.has(msg.id)}
+          <div class="content">{cleanContent(msg.content).slice(0, MSG_TRUNCATE)}… <button class="expand-link" onclick={() => { expanded.add(msg.id); expanded = expanded }}>show more</button></div>
         {:else}
-          <div class="content">{msg.content}</div>
+          <div class="content">{cleanContent(msg.content)}</div>
         {/if}
       </div>
     {/each}
