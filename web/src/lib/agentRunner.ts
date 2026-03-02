@@ -126,10 +126,29 @@ export class AgentRunner {
         const synthesizer = agents.find((a) => a.role === 'synthesizer')
 
         if (workers.length > 0 && synthesizer) {
-          const allWorkersDone = workers.every(
+          let allWorkersDone = workers.every(
             (w) => coord.getAgentStatus(w.id) === 'done' || coord.getAgentStatus(w.id) === 'error',
           )
           const synthStatus = coord.getAgentStatus(synthesizer.id)
+
+          // Peer-message wake-up: if all workers report "done" but some have
+          // unprocessed messages (from peers who sent messages in the same round),
+          // reset those workers to "waiting" so they process peer messages first.
+          if (allWorkersDone) {
+            const workersWithPending = workers.filter((w) => {
+              const total = coord.getMessageCountFor(w.id)
+              const processed = this.processedCounts.get(w.id) ?? 0
+              return total > processed && coord.getAgentStatus(w.id) !== 'error'
+            })
+            if (workersWithPending.length > 0) {
+              for (const w of workersWithPending) {
+                coord.updateAgentStatus(w.id, 'waiting')
+                this.cb.onStatusUpdate(w.id, 'waiting')
+              }
+              this.cb.onLog(`Peer messages pending for ${workersWithPending.map((w) => w.name).join(', ')} — deferring synthesis`)
+              allWorkersDone = false
+            }
+          }
 
           if (allWorkersDone && synthStatus !== 'done') {
             const workerSummaries = workers.map((w) => {
@@ -406,7 +425,14 @@ Write for a human reader: be COMPREHENSIVE and THOROUGH. Include:
 • A structured breakdown — use multiple sections with headings
 Do NOT summarise briefly — the user wants depth. Aim for a complete, detailed report.
 Never put raw JSON, code fences around the whole result, or agent IDs in the result.
-` : ''}`
+` : ''}
+${agent.role === 'worker' || agent.role === 'custom' ? `
+WORKER INSTRUCTIONS — You can collaborate directly with other workers listed above.
+• If your task overlaps with or depends on another worker's area, message them to share findings, request input, or flag contradictions.
+• If you sent a message to a peer and are waiting for their reply, set "done": false so you stay active for the next round.
+• Only set "done": true when YOUR work is fully complete and you are NOT waiting on any peer response.
+• Keep peer exchanges focused — one or two rounds of back-and-forth at most.
+• Do NOT message peers just to be polite — only when it adds concrete value (shared data, dependency, contradiction).` : ''}`
   }
 
   private parseResponse(raw: string): AgentResponse {
