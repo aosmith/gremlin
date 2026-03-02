@@ -10,7 +10,7 @@
   }
   const { messages, agents, logs }: Props = $props()
 
-  const MSG_TRUNCATE = 500
+  const MSG_TRUNCATE = 2000
 
   let scrollEl = $state<HTMLDivElement | undefined>(undefined)
   let expanded = $state(new Set<string>())

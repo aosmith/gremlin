@@ -435,19 +435,7 @@ Never put raw JSON, code fences around the whole result, or agent IDs in the res
     return { analysis: raw, messages: [], done: true, result: raw }
   }
 
-  /** Extract human-readable text from the synthesizer's result, which may be raw JSON. */
-  private cleanOutput(raw: string): string {
-    const trimmed = raw.trim()
-    if (trimmed.startsWith('{')) {
-      try {
-        const obj = JSON.parse(trimmed)
-        return this.flattenResult(obj)
-      } catch { /* not valid JSON */ }
-    }
-    return raw
-  }
-
-  /** Build the full output JSON string so the store's cleanOutput can format all fields. */
+  /** Build the full output JSON string — formatting happens at render time in cleanContent.ts. */
   private formatSynthesizerOutput(parsed: AgentResponse): string {
     // Pass the full parsed response as JSON — store's cleanOutput will format all fields
     return JSON.stringify({

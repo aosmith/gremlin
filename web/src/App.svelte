@@ -12,6 +12,7 @@
   import CodeViewer from './components/CodeViewer.svelte'
   import NewModeModal from './components/NewModeModal.svelte'
   import SessionHistory from './components/SessionHistory.svelte'
+  import { formatOutputAsMarkdown, cleanOutputForCopy } from './lib/cleanContent'
 
   // Configure marked for safe output
   marked.setOptions({ breaks: true, gfm: true })
@@ -42,7 +43,7 @@
   // Results modal
   let showResultsModal = $state(!!store.output)
   let resultsDismissed = $state(false)
-  const outputHtml = $derived(store.output ? marked.parse(store.output) as string : '')
+  const outputHtml = $derived(store.output ? marked.parse(formatOutputAsMarkdown(store.output)) as string : '')
 
   // Show the results modal only when the run finishes with output (not mid-run)
   $effect(() => {
@@ -58,7 +59,7 @@
   }
 
   function copyOutput() {
-    if (store.output) navigator.clipboard.writeText(store.output)
+    if (store.output) navigator.clipboard.writeText(cleanOutputForCopy(store.output))
   }
 
   // Follow-up reply

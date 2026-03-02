@@ -1,4 +1,4 @@
-// Fix literal newlines inside JSON strings so JSON.parse doesn't choke
+/** Fix literal newlines inside JSON strings so JSON.parse works. */
 function fixJsonNewlines(text: string): string {
   let out = ''
   let inStr = false
@@ -18,45 +18,148 @@ function fixJsonNewlines(text: string): string {
   return out
 }
 
-/** Format agent JSON into clean, readable display text for the activity monitor. */
+/** snake_case / camelCase → Title Case */
+function prettifyName(name: string): string {
+  return name
+    .replace(/[_-]/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+/** Try to parse a string as JSON, handling malformed newlines. */
+function tryParseJson(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim()
+  const start = trimmed.indexOf('{')
+  const end = trimmed.lastIndexOf('}')
+  if (start === -1 || end <= start) return null
+  try {
+    return JSON.parse(fixJsonNewlines(trimmed.slice(start, end + 1)))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Format agent JSON into readable text for the Activity Monitor / Agent Panel.
+ * Compact single-line format.
+ */
 export function cleanContent(raw: string): string {
   const trimmed = raw.trim()
   if (!trimmed.startsWith('{')) return raw
 
-  try {
-    const obj = JSON.parse(fixJsonNewlines(trimmed))
-    const parts: string[] = []
+  const obj = tryParseJson(trimmed)
+  if (!obj) return raw
 
-    if (typeof obj.analysis === 'string' && obj.analysis.trim()) {
-      parts.push(`${obj.analysis.trim()}`)
-    }
+  const parts: string[] = []
 
-    if (Array.isArray(obj.messages) && obj.messages.length > 0) {
-      for (const m of obj.messages) {
-        if (m.to && m.content) parts.push(`  \u2192 ${m.to}: ${m.content}`)
+  if (typeof obj.analysis === 'string' && obj.analysis.trim()) {
+    parts.push(obj.analysis.trim())
+  }
+
+  if (Array.isArray(obj.messages) && obj.messages.length > 0) {
+    for (const m of obj.messages) {
+      if (m.to && m.content) {
+        parts.push(`  \u2192 ${prettifyName(m.to)}: ${m.content}`)
       }
     }
-
-    if (obj.done === true) {
-      parts.push(`\u2714 Done`)
-    }
-
-    if (typeof obj.result === 'string' && obj.result.trim()) {
-      parts.push(`\u2605 Result: ${obj.result.trim()}`)
-    }
-
-    if (parts.length > 0) return parts.join('\n')
-  } catch { /* JSON parse failed */ }
-
-  // Regex fallback for malformed JSON
-  const parts: string[] = []
-  const re = /"(\w+)"\s*:\s*"((?:[^"\\]|\\.)*)"/gs
-  let m
-  while ((m = re.exec(trimmed)) !== null) {
-    const val = m[2].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\').trim()
-    if (val) parts.push(val)
   }
-  if (parts.length > 0) return parts.join('\n')
 
-  return raw
+  if (obj.done === true) parts.push('\u2714 Done')
+
+  if (typeof obj.result === 'string' && obj.result.trim()) {
+    parts.push(`\u2605 Result: ${obj.result.trim()}`)
+  }
+
+  return parts.length > 0 ? parts.join('\n') : raw
+}
+
+/**
+ * Format output for the Results Modal.
+ * Produces styled Markdown with all fields visible.
+ * Runs at RENDER time so it always processes the latest raw data.
+ */
+export function formatOutputAsMarkdown(raw: string): string {
+  if (!raw) return ''
+
+  const obj = tryParseJson(raw)
+  if (!obj) {
+    // Not JSON — prettify snake_case names and return as-is
+    return prettifySnakeCase(raw)
+  }
+
+  const sections: string[] = []
+
+  const hasResult = typeof obj.result === 'string' && obj.result.trim().length > 0
+  const hasAnalysis = typeof obj.analysis === 'string' && obj.analysis.trim().length > 0
+
+  // If we have a substantial result, that's the primary content.
+  // Analysis is internal reasoning — only show it if there's no result,
+  // or as a collapsed detail when result is present.
+  if (hasResult) {
+    const resultText = obj.result as string
+    // Recursively format in case result itself contains JSON
+    sections.push(formatOutputAsMarkdown(resultText.trim()))
+
+    // If analysis adds meaningful context beyond the result, show it under a heading
+    if (hasAnalysis) {
+      const analysisText = (obj.analysis as string).trim()
+      // Only include if analysis is non-trivial and different from result
+      if (analysisText.length > 50 && analysisText !== resultText.trim()) {
+        sections.push(`### Analysis\n\n${prettifySnakeCase(analysisText)}`)
+      }
+    }
+  } else if (hasAnalysis) {
+    // No result — analysis is the main content
+    sections.push(formatOutputAsMarkdown((obj.analysis as string).trim()))
+  }
+
+  // Messages / directives
+  if (Array.isArray(obj.messages) && obj.messages.length > 0) {
+    const items = obj.messages
+      .filter((m: any) => m.to && m.content)
+      .map((m: any) => `- **${prettifyName(String(m.to))}** — ${m.content}`)
+    if (items.length > 0) {
+      sections.push(`### Directives\n\n${items.join('\n')}`)
+    }
+  }
+
+  return sections.length > 0 ? sections.join('\n\n---\n\n') : prettifySnakeCase(raw)
+}
+
+/**
+ * Extract a clean plain-text version of the output for clipboard copy.
+ * Strips JSON wrapper and returns the human-readable content.
+ */
+export function cleanOutputForCopy(raw: string): string {
+  if (!raw) return ''
+
+  const obj = tryParseJson(raw)
+  if (!obj) return raw
+
+  const parts: string[] = []
+
+  if (typeof obj.result === 'string' && obj.result.trim()) {
+    parts.push(obj.result.trim())
+  }
+  if (typeof obj.analysis === 'string' && obj.analysis.trim()) {
+    // Only include analysis if different from result
+    const result = typeof obj.result === 'string' ? obj.result.trim() : ''
+    if (obj.analysis.trim() !== result) {
+      parts.push(obj.analysis.trim())
+    }
+  }
+  if (Array.isArray(obj.messages) && obj.messages.length > 0) {
+    for (const m of obj.messages) {
+      if (m.to && m.content) {
+        parts.push(`${prettifyName(String(m.to))}: ${m.content}`)
+      }
+    }
+  }
+
+  return parts.length > 0 ? parts.join('\n\n') : raw
+}
+
+/** Replace standalone snake_case identifiers with Title Case. */
+function prettifySnakeCase(text: string): string {
+  return text.replace(/\b([a-z]+(?:_[a-z]+)+)\b/g, (match) => prettifyName(match))
 }

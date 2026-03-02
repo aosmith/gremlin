@@ -67,7 +67,6 @@ function saveCustomModes(modes: CustomMode[])  { lsSet('gremlin_custom_modes', m
 const TASK_KEY    = 'gremlin_task'
 const SESSION_KEY = 'gremlin_session'
 const HISTORY_KEY = 'gremlin_task_history'
-const MAX_HISTORY = 50
 
 function loadPersistedTask(): string    { return ls(TASK_KEY, '') }
 function savePersistedTask(t: string)   { lsSet(TASK_KEY, t) }
@@ -76,7 +75,7 @@ function pushTaskHistory(t: string) {
   const trimmed = t.trim()
   if (!trimmed) return
   const h = loadTaskHistory().filter((x) => x !== trimmed)
-  lsSet(HISTORY_KEY, [trimmed, ...h].slice(0, MAX_HISTORY))
+  lsSet(HISTORY_KEY, [trimmed, ...h])
 }
 
 interface PersistedSession {
@@ -101,9 +100,7 @@ function clearPersistedSession() {
 // ── Session history persistence ──────────────────────────────────────────────
 
 const SESSION_HISTORY_KEY  = 'gremlin_session_history'
-const MAX_SESSION_HISTORY  = 25
-const ARCHIVED_MSG_LIMIT   = 200
-const ARCHIVED_LOG_LIMIT   = 100
+const MAX_SESSION_HISTORY  = 1_000
 
 export interface SessionHistoryEntry {
   id: string
@@ -148,77 +145,11 @@ function deleteArchivedSession(id: string) {
   lsDel(`gremlin_session_${id}`)
 }
 
-// ── Output cleaning ──────────────────────────────────────────────────────────
-// LLMs return JSON with literal newlines in strings — fix them so JSON.parse works
-function fixJsonNewlines(text: string): string {
-  let out = ''
-  let inStr = false
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]
-    if (inStr) {
-      if (ch === '\\') { out += ch + (text[i + 1] ?? ''); i++; continue }
-      if (ch === '"') { inStr = false; out += ch; continue }
-      if (ch === '\n') { out += '\\n'; continue }
-      if (ch === '\r') { out += '\\r'; continue }
-      out += ch
-    } else {
-      if (ch === '"') inStr = true
-      out += ch
-    }
-  }
-  return out
-}
-
-/** If text looks like agent JSON, format all fields as styled readable markdown. */
-function cleanOutput(raw: string): string {
-  if (!raw) return raw
-  const trimmed = raw.trim()
-  const start = trimmed.indexOf('{')
-  const end = trimmed.lastIndexOf('}')
-  if (start === -1 || end <= start) return raw
-  try {
-    const obj = JSON.parse(fixJsonNewlines(trimmed.slice(start, end + 1)))
-    const sections: string[] = []
-
-    // Analysis — main body
-    if (typeof obj.analysis === 'string' && obj.analysis.trim()) {
-      sections.push(cleanOutput(obj.analysis.trim()))
-    }
-
-    // Messages / directives
-    if (Array.isArray(obj.messages) && obj.messages.length > 0) {
-      const items = obj.messages
-        .filter((m: any) => m.to && m.content)
-        .map((m: any) => `| **${m.to}** | ${m.content} |`)
-      if (items.length > 0) {
-        sections.push(`### Directives\n\n| Agent | Action |\n|---|---|\n${items.join('\n')}`)
-      }
-    }
-
-    // Result — conclusion
-    if (typeof obj.result === 'string' && obj.result.trim()) {
-      const r = cleanOutput(obj.result.trim())
-      sections.push(`### Result\n\n${r}`)
-    }
-
-    if (sections.length > 0) return sections.join('\n\n---\n\n')
-  } catch { /* JSON parse failed — try regex fallback */ }
-  // Regex fallback for malformed JSON
-  const parts: string[] = []
-  const re = /"(\w+)"\s*:\s*"((?:[^"\\]|\\.)*)"/gs
-  let m
-  while ((m = re.exec(trimmed)) !== null) {
-    const val = m[2].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\').trim()
-    if (val) parts.push(val)
-  }
-  if (parts.length > 0) return parts.join('\n\n---\n\n')
-  return raw
-}
+// ── Output formatting (exported for render-time use in App.svelte) ───────────
 
 // ── Limits ───────────────────────────────────────────────────────────────────
 
-const MAX_MESSAGES = 2000
-const MAX_LOGS     = 500
+// No artificial limits — this is a local application
 
 // ── Store ─────────────────────────────────────────────────────────────────────
 
@@ -240,7 +171,7 @@ class GremlinStore {
   agentStates  = $state<AgentState[]>(this._session.agentStates)
   messages     = $state<Message[]>(this._session.messages)
   logs         = $state<string[]>(this._session.logs)
-  output       = $state<string>(cleanOutput(this._session.output))
+  output       = $state<string>(this._session.output)
   task         = $state<string>(loadPersistedTask())
   taskHistory  = $state<string[]>(loadTaskHistory())
 
@@ -428,8 +359,8 @@ class GremlinStore {
       modeName: modeInfo.name,
       modeIcon: modeInfo.icon,
       timestamp: now,
-      messages: this.messages.slice(-ARCHIVED_MSG_LIMIT),
-      logs: this.logs.slice(-ARCHIVED_LOG_LIMIT),
+      messages: [...this.messages],
+      logs: [...this.logs],
       output: this.output,
       agentStates: this.agentStates.map((a) => ({ ...a, status: 'idle' as const })),
     }
@@ -565,22 +496,16 @@ class GremlinStore {
   // ── Private session mutation helpers (debounced save) ────────────────────
   private addMessage(msg: Message) {
     this.messages.push(msg)
-    if (this.messages.length > MAX_MESSAGES) {
-      this.messages = this.messages.slice(-MAX_MESSAGES)
-    }
     this.saveSession()
   }
 
   private addLog(text: string) {
     this.logs.push(text)
-    if (this.logs.length > MAX_LOGS) {
-      this.logs = this.logs.slice(-MAX_LOGS)
-    }
     this.saveSession()
   }
 
   private setOutput(output: string) {
-    this.output = cleanOutput(output)
+    this.output = output
     this.saveSession()
   }
 
