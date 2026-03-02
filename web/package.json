@@ -19,6 +19,7 @@
     "vite-plugin-wasm": "^3.3.0"
   },
   "dependencies": {
-    "@mlc-ai/web-llm": "^0.2.81"
+    "@mlc-ai/web-llm": "^0.2.81",
+    "marked": "^17.0.3"
   }
 }

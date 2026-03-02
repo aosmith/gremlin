@@ -279,7 +279,7 @@ export class AgentRunner {
       this.cb.onStatusUpdate(agent.id, newStatus)
 
       if (parsed.done && parsed.result != null && agent.role === 'synthesizer') {
-        this.cb.onOutput(parsed.result)
+        this.cb.onOutput(this.cleanOutput(parsed.result))
       }
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return  // user stopped the run
@@ -331,7 +331,13 @@ Rules:
 • "done"       — set true only when you have fully completed your task
 • "result"     — your final conclusion (set when done: true; null otherwise)
 • Reference agents by their ID (e.g. "worker_1") or name
-`
+${agent.role === 'synthesizer' ? `
+SYNTHESIZER INSTRUCTIONS — Your "result" field is shown directly to a human user.
+Write it as clear, well-structured Markdown prose — NOT JSON, NOT bullet-point dumps.
+Use headings, paragraphs, bold for emphasis, and lists where appropriate.
+Write for a human reader: explain findings, give actionable conclusions, and be concise.
+Never put raw JSON, code fences around the whole result, or agent IDs in the result.
+` : ''}`
   }
 
   private parseResponse(raw: string): AgentResponse {
@@ -348,7 +354,9 @@ Rules:
           analysis: typeof parsed.analysis === 'string' ? parsed.analysis : '',
           messages: Array.isArray(parsed.messages) ? parsed.messages : [],
           done: Boolean(parsed.done),
-          result: parsed.result ?? null,
+          result: typeof parsed.result === 'string' ? parsed.result
+            : parsed.result != null ? JSON.stringify(parsed.result)
+            : null,
         }
       }
     } catch {
@@ -356,6 +364,26 @@ Rules:
     }
     // Plain-text fallback — treat entire response as final result
     return { analysis: raw, messages: [], done: true, result: raw }
+  }
+
+  /** Extract human-readable text from the synthesizer's result, which may be raw JSON. */
+  private cleanOutput(raw: string): string {
+    const trimmed = raw.trim()
+    // Try to detect JSON (the LLM sometimes wraps its result in JSON structure)
+    if (trimmed.startsWith('{')) {
+      try {
+        const obj = JSON.parse(trimmed)
+        // If it looks like an agent response object, extract the meaningful parts
+        if (typeof obj.result === 'string') return obj.result
+        if (typeof obj.analysis === 'string') return obj.analysis
+        // Generic object — try to extract any string value that looks like prose
+        const values = Object.values(obj).filter((v): v is string => typeof v === 'string' && v.length > 20)
+        if (values.length > 0) return values.join('\n\n')
+      } catch {
+        // Not valid JSON, just return as-is
+      }
+    }
+    return raw
   }
 
   private resolveAgent(nameOrId: string): AgentConfig | undefined {

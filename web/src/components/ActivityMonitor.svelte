@@ -53,7 +53,7 @@
       <div class="empty">
         <div class="empty-icon">◉</div>
         <div>Awaiting session start…</div>
-        <div class="muted" style="font-size:12px;margin-top:4px">Enter a task and press Run</div>
+        <div class="empty-hint muted">Enter a task and press Run</div>
       </div>
     {/if}
 
@@ -129,6 +129,7 @@
     font-size: 13px;
   }
   .empty-icon { font-size: 28px; opacity: 0.4; }
+  .empty-hint { font-size: 12px; margin-top: 4px; }
 
   .event {
     padding: 8px 14px;

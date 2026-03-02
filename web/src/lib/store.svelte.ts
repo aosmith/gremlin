@@ -98,6 +98,44 @@ function clearPersistedSession() {
   lsDel(SESSION_KEY)
 }
 
+// ── Output cleaning ──────────────────────────────────────────────────────────
+// LLMs return JSON with literal newlines in strings — fix them so JSON.parse works
+function fixJsonNewlines(text: string): string {
+  let out = ''
+  let inStr = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (inStr) {
+      if (ch === '\\') { out += ch + (text[i + 1] ?? ''); i++; continue }
+      if (ch === '"') { inStr = false; out += ch; continue }
+      if (ch === '\n') { out += '\\n'; continue }
+      if (ch === '\r') { out += '\\r'; continue }
+      out += ch
+    } else {
+      if (ch === '"') inStr = true
+      out += ch
+    }
+  }
+  return out
+}
+
+/** If text looks like agent JSON, extract the human-readable result/analysis. */
+function cleanOutput(raw: string): string {
+  if (!raw) return raw
+  const trimmed = raw.trim()
+  const start = trimmed.indexOf('{')
+  const end = trimmed.lastIndexOf('}')
+  if (start === -1 || end <= start) return raw
+  try {
+    const obj = JSON.parse(fixJsonNewlines(trimmed.slice(start, end + 1)))
+    if (typeof obj.result === 'string' && obj.result.trim()) return obj.result.trim()
+    if (typeof obj.analysis === 'string' && obj.analysis.trim()) return obj.analysis.trim()
+    const strings = Object.values(obj).filter((v): v is string => typeof v === 'string' && v.length > 20)
+    if (strings.length > 0) return strings.join('\n\n')
+  } catch { /* not parseable, return as-is */ }
+  return raw
+}
+
 // ── Limits ───────────────────────────────────────────────────────────────────
 
 const MAX_MESSAGES = 2000
@@ -123,7 +161,7 @@ class GremlinStore {
   agentStates  = $state<AgentState[]>(this._session.agentStates)
   messages     = $state<Message[]>(this._session.messages)
   logs         = $state<string[]>(this._session.logs)
-  output       = $state<string>(this._session.output)
+  output       = $state<string>(cleanOutput(this._session.output))
   task         = $state<string>(loadPersistedTask())
   taskHistory  = $state<string[]>(loadTaskHistory())
 
@@ -291,6 +329,27 @@ class GremlinStore {
   }
 
   // ── Session ───────────────────────────────────────────────────────────────
+
+  /** Initialize WASM coordinator from restored session state (page load). */
+  initSession() {
+    coord.clearSession()
+    for (const cfg of this.agentConfigs) coord.addAgent(cfg)
+    // If we have a restored session, sync agent states but keep messages/logs/output intact
+    if (this.messages.length > 0 || this.output) {
+      this.agentStates = this.agentConfigs.map((cfg) => {
+        const restored = this._session.agentStates.find((a) => a.id === cfg.id)
+        return restored ?? { ...cfg, status: 'idle' as const, messageCount: 0, unreadCount: 0 }
+      })
+    } else {
+      this.agentStates = this.agentConfigs.map((cfg) => ({
+        ...cfg,
+        status: 'idle' as const,
+        messageCount: 0,
+        unreadCount: 0,
+      }))
+    }
+  }
+
   clearSession() {
     if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null }
     this.messages    = []
@@ -325,7 +384,7 @@ class GremlinStore {
   }
 
   private setOutput(output: string) {
-    this.output = output
+    this.output = cleanOutput(output)
     this.saveSession()
   }
 

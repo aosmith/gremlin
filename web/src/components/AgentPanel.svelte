@@ -101,7 +101,7 @@
 
     <div class="human-input-section">
       <div class="model-row">
-        <span class="section-label" style="padding:0">Model</span>
+        <span class="section-label model-label">Model</span>
         <select
           class="model-input"
           value={agent.model ?? ''}
@@ -187,6 +187,7 @@
     padding: 10px 14px 4px;
     flex-shrink: 0;
   }
+  .model-label { padding: 0; }
 
   .conversation {
     flex: 1;

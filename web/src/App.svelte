@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { marked } from 'marked'
   import { store } from './lib/store.svelte'
   import { initCoordinator } from './lib/coordinator'
   import AgentCard from './components/AgentCard.svelte'
@@ -11,11 +12,14 @@
   import CodeViewer from './components/CodeViewer.svelte'
   import NewModeModal from './components/NewModeModal.svelte'
 
+  // Configure marked for safe output
+  marked.setOptions({ breaks: true, gfm: true })
+
   onMount(async () => {
     try {
       await initCoordinator()
       store.wasmReady = true
-      store.clearSession()
+      store.initSession()
     } catch (err) {
       console.error('WASM init failed:', err)
       store.logs = ['✖ WASM coordinator failed to load — run: npm run build:wasm']
@@ -34,6 +38,28 @@
   const showCodeViewer = $derived(isEngineering && store.selectedFile !== null)
   const showAgentPanel = $derived(selectedAgent !== null && !showCodeViewer)
 
+  // Results modal
+  let showResultsModal = $state(!!store.output)
+  let resultsDismissed = $state(false)
+  const outputHtml = $derived(store.output ? marked.parse(store.output) as string : '')
+
+  // When output changes (new results come in), show the modal
+  $effect(() => {
+    if (store.output) {
+      showResultsModal = true
+      resultsDismissed = false
+    }
+  })
+
+  function dismissResults() {
+    showResultsModal = false
+    resultsDismissed = true
+  }
+
+  function copyOutput() {
+    if (store.output) navigator.clipboard.writeText(store.output)
+  }
+
   // Follow-up reply
   let replyText = $state('')
 
@@ -44,7 +70,21 @@
     if (!orchestrator) return
     replyText = ''
     store.output = ''
+    showResultsModal = false
+    resultsDismissed = false
     store.injectHumanMessage(orchestrator.id, text)
+  }
+
+  // Live input during runs
+  let liveInput = $state('')
+
+  function sendLiveMessage() {
+    const text = liveInput.trim()
+    if (!text || !store.isRunning) return
+    const orchestrator = store.agentConfigs.find((a) => a.role === 'orchestrator')
+    if (!orchestrator) return
+    store.injectHumanMessage(orchestrator.id, text)
+    liveInput = ''
   }
 </script>
 
@@ -60,6 +100,51 @@
 {/if}
 {#if store.showModeCreate}
   <NewModeModal onclose={() => (store.showModeCreate = false)} />
+{/if}
+
+<!-- ── Results modal ── -->
+{#if showResultsModal && store.output}
+  <div class="modal-backdrop" role="dialog" aria-modal="true">
+    <div class="results-modal">
+      <div class="results-header">
+        <div class="results-title">
+          <span class="output-dot"></span>
+          Results
+          <span class="results-mode-badge">{store.currentModeInfo.icon} {store.currentModeInfo.name}</span>
+        </div>
+        <div class="results-actions">
+          <button class="ghost btn-sm" onclick={copyOutput} title="Copy to clipboard">Copy</button>
+          <button class="ghost icon" onclick={dismissResults} title="Close">✕</button>
+        </div>
+      </div>
+
+      {#if store.task}
+        <div class="results-task">
+          <span class="results-task-label">Task</span>
+          <span class="results-task-text">{store.task}</span>
+        </div>
+      {/if}
+
+      <div class="results-body prose">
+        {@html outputHtml}
+      </div>
+
+      <div class="reply-bar">
+        <input
+          class="reply-input"
+          type="text"
+          placeholder="Reply — ask a follow-up or give feedback…"
+          bind:value={replyText}
+          onkeydown={(e) => e.key === 'Enter' && sendReply()}
+        />
+        <button
+          class="primary reply-btn"
+          onclick={sendReply}
+          disabled={!replyText.trim()}
+        >Reply</button>
+      </div>
+    </div>
+  </div>
 {/if}
 
 <!-- ── App shell ── -->
@@ -78,36 +163,59 @@
         </div>
       </div>
 
-      <!-- Task input -->
+      <!-- Task input / Live input -->
       <div class="nav-task">
-        <input
-          class="task-input"
-          type="text"
-          list="task-history"
-          placeholder="Enter a task for the agent swarm…  (Enter to run)"
-          value={store.task}
-          disabled={store.isRunning}
-          oninput={(e) => {
-            store.task = (e.target as HTMLInputElement).value
-            store.saveTask()
-          }}
-          onkeydown={(e) => e.key === 'Enter' && !store.isRunning && store.settings.model.trim() && store.startRun()}
-        />
-        <datalist id="task-history">
-          {#each store.taskHistory as t}
-            <option value={t}>{t}</option>
-          {/each}
-        </datalist>
+        {#if store.isRunning}
+          <div class="live-input-wrap">
+            <input
+              class="task-input live"
+              type="text"
+              placeholder="Send a message to the running swarm… (Enter to send)"
+              bind:value={liveInput}
+              onkeydown={(e) => e.key === 'Enter' && sendLiveMessage()}
+            />
+            <button
+              class="primary btn-xs"
+              onclick={sendLiveMessage}
+              disabled={!liveInput.trim()}
+            >Send</button>
+          </div>
+        {:else}
+          <input
+            class="task-input"
+            type="text"
+            list="task-history"
+            placeholder="Enter a task for the agent swarm…  (Enter to run)"
+            value={store.task}
+            oninput={(e) => {
+              store.task = (e.target as HTMLInputElement).value
+              store.saveTask()
+            }}
+            onkeydown={(e) => e.key === 'Enter' && store.settings.model.trim() && store.startRun()}
+          />
+          <datalist id="task-history">
+            {#each store.taskHistory as t}
+              <option value={t}>{t}</option>
+            {/each}
+          </datalist>
+        {/if}
       </div>
 
       <!-- Controls -->
       <div class="nav-controls">
+        {#if !store.settings.model.trim()}
+          <button
+            class="warn btn-sm"
+            onclick={() => (store.showSettings = true)}
+            title="No model configured — click to open Settings"
+          >Set Model</button>
+        {/if}
         {#if isEngineering}
           {#if store.projectDirName}
             <div class="folder-badge" title="Project folder: {store.projectDirName}">
               <span>📁</span>
               <span class="folder-name">{store.projectDirName}</span>
-              <button class="ghost icon" style="padding:0 2px;height:auto;font-size:10px" onclick={() => store.closeProjectFolder()} title="Close folder">✕</button>
+              <button class="ghost icon btn-folder-close" onclick={() => store.closeProjectFolder()} title="Close folder">✕</button>
             </div>
           {:else}
             <button class="ghost" onclick={() => store.openProjectFolder()} title="Select project directory for file access">
@@ -122,10 +230,9 @@
           title="Clear session"
         >↺ Clear</button>
         <button
-          class="ghost icon"
+          class="ghost icon btn-settings"
           onclick={() => (store.showSettings = true)}
           title="Settings"
-          style="font-size:16px"
         >⚙</button>
         {#if store.isRunning}
           <button class="danger" onclick={() => store.stopRun()}>⏹ Stop</button>
@@ -225,8 +332,7 @@
         {#if store.agentStates.length === 0}
           <div class="empty-agents muted">
             No agents yet.
-            <button class="ghost" style="margin-top:6px;width:100%;justify-content:center"
-              onclick={() => (store.showAgentEdit = '__new__')}>
+            <button class="ghost btn-full" onclick={() => (store.showAgentEdit = '__new__')}>
               + Add agent
             </button>
           </div>
@@ -235,8 +341,7 @@
 
       <div class="sidebar-foot">
         <button
-          class="ghost"
-          style="width:100%;justify-content:center;font-size:11px"
+          class="ghost btn-full btn-sm"
           onclick={() => { store.resetAgents(); store.clearSession() }}
           disabled={store.isRunning}
           title="Restore default agents for this mode"
@@ -250,8 +355,7 @@
             <span class="sidebar-label">Files</span>
             {#if store.projectDirName}
               <button
-                class="ghost icon"
-                style="font-size:11px;padding:2px 4px"
+                class="ghost icon btn-refresh"
                 onclick={() => store.refreshFiles()}
                 title="Refresh file list"
               >↺</button>
@@ -299,35 +403,16 @@
     {/if}
   </div>
 
-  <!-- Output panel -->
-  {#if store.output}
-    <div class="output-panel">
-      <div class="output-head">
-        <span class="output-dot"></span>
-        Final Output
-        <button
-          class="ghost icon"
-          onclick={() => (store.output = '')}
-          style="margin-left:auto"
-          title="Dismiss"
-        >✕</button>
-      </div>
-      <div class="output-body">{store.output}</div>
-      <div class="reply-bar">
-        <input
-          class="reply-input"
-          type="text"
-          placeholder="Reply — ask a follow-up or give feedback…"
-          bind:value={replyText}
-          onkeydown={(e) => e.key === 'Enter' && sendReply()}
-        />
-        <button
-          class="primary reply-btn"
-          onclick={sendReply}
-          disabled={!replyText.trim()}
-        >Reply</button>
-      </div>
-    </div>
+  <!-- "View Results" floating badge (shown when modal dismissed but output exists) -->
+  {#if resultsDismissed && store.output}
+    <button
+      class="results-badge"
+      onclick={() => { showResultsModal = true; resultsDismissed = false }}
+      title="View results"
+    >
+      <span class="output-dot"></span>
+      View Results
+    </button>
   {/if}
 </div>
 
@@ -338,6 +423,7 @@
     flex-direction: column;
     height: 100vh;
     overflow: hidden;
+    position: relative;
   }
 
   /* ── Navbar ────────────────────────────────────────────────────────────── */
@@ -447,9 +533,31 @@
   .task-input:hover  { background: var(--glass-light); border-color: var(--glass-light-border); }
   .task-input:focus  { background: var(--glass-tinted); border-color: var(--glass-tinted-border); box-shadow: 0 0 0 3px rgba(63,185,80,0.12); }
   .task-input:disabled { opacity: 0.5; }
+  .task-input.live {
+    border-color: rgba(88,166,255,0.4);
+    background: rgba(88,166,255,0.06);
+  }
+  .task-input.live:focus {
+    border-color: rgba(88,166,255,0.6);
+    box-shadow: 0 0 0 3px rgba(88,166,255,0.12);
+  }
+
+  .live-input-wrap {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .live-input-wrap .task-input { flex: 1; }
 
   .nav-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
   .run-btn { min-width: 80px; }
+
+  .btn-xs { font-size: 11px; padding: 4px 10px; }
+  .btn-sm { font-size: 11px; }
+  .btn-full { margin-top: 6px; width: 100%; justify-content: center; }
+  .btn-settings { font-size: 16px; }
+  .btn-folder-close { padding: 0 2px; height: auto; font-size: 10px; }
+  .btn-refresh { font-size: 11px; padding: 2px 4px; }
 
   .folder-badge {
     display: flex;
@@ -656,37 +764,89 @@
     to   { opacity: 1; transform: translateX(0); }
   }
 
-  /* ── Output panel ──────────────────────────────────────────────────────── */
-  .output-panel {
-    flex-shrink: 0;
-    max-height: 240px;
-    overflow-y: auto;
-    border-top: 1px solid var(--glass-tinted-border);
-    background: rgba(9, 12, 18, 0.9);
-    backdrop-filter: blur(var(--blur));
-    animation: slide-up var(--t-smooth);
+  /* ── Results modal ──────────────────────────────────────────────────────── */
+  .results-modal {
+    width: min(720px, 90vw);
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    background: rgba(9, 12, 18, 0.96);
+    border: 1px solid var(--glass-tinted-border);
+    border-radius: var(--radius-lg, 12px);
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+    animation: modal-in 0.2s ease-out;
   }
-  @keyframes slide-up {
-    from { opacity: 0; transform: translateY(10px); }
-    to   { opacity: 1; transform: translateY(0); }
+  @keyframes modal-in {
+    from { opacity: 0; transform: translateY(20px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
   }
 
-  .output-head {
+  .results-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--glass-border);
+    flex-shrink: 0;
+  }
+  .results-title {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 16px;
-    border-bottom: 1px solid var(--glass-border);
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 800;
     text-transform: uppercase;
     letter-spacing: 0.07em;
     color: var(--color-accent);
-    position: sticky;
-    top: 0;
-    background: inherit;
-    z-index: 1;
   }
+  .results-mode-badge {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: 0;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    color: var(--color-text-3);
+  }
+  .results-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .results-task {
+    padding: 8px 18px;
+    font-size: 12px;
+    border-bottom: 1px solid var(--glass-border);
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    flex-shrink: 0;
+  }
+  .results-task-label {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-text-4);
+    flex-shrink: 0;
+  }
+  .results-task-text {
+    color: var(--color-text-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .results-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 24px;
+    min-height: 0;
+  }
+
   .output-dot {
     width: 7px; height: 7px;
     border-radius: 50%;
@@ -694,24 +854,115 @@
     box-shadow: 0 0 8px rgba(63,185,80,0.6);
     flex-shrink: 0;
   }
-  .output-body {
-    padding: 12px 16px 16px;
-    font-size: 13.5px;
+
+  /* ── Prose (markdown) styling ───────────────────────────────────────────── */
+  .prose {
+    font-size: 14px;
     line-height: 1.75;
-    white-space: pre-wrap;
-    word-break: break-word;
     color: var(--color-text);
+    word-break: break-word;
+  }
+  .prose :global(h1) { font-size: 1.5em; font-weight: 700; margin: 1.2em 0 0.6em; color: var(--color-accent); }
+  .prose :global(h2) { font-size: 1.25em; font-weight: 700; margin: 1em 0 0.5em; color: var(--color-text); }
+  .prose :global(h3) { font-size: 1.1em; font-weight: 600; margin: 0.8em 0 0.4em; color: var(--color-text); }
+  .prose :global(p)  { margin: 0.6em 0; }
+  .prose :global(ul), .prose :global(ol) { margin: 0.5em 0; padding-left: 1.5em; }
+  .prose :global(li) { margin: 0.25em 0; }
+  .prose :global(strong) { font-weight: 700; color: var(--color-text); }
+  .prose :global(em) { font-style: italic; }
+  .prose :global(code) {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    padding: 2px 5px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 3px;
+    color: var(--color-accent-2);
+  }
+  .prose :global(pre) {
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--glass-border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    overflow-x: auto;
+    margin: 0.8em 0;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .prose :global(pre code) {
+    background: none;
+    padding: 0;
+    font-size: inherit;
+  }
+  .prose :global(blockquote) {
+    border-left: 3px solid var(--color-accent);
+    padding: 4px 12px;
+    margin: 0.6em 0;
+    color: var(--color-text-3);
+  }
+  .prose :global(hr) {
+    border: none;
+    border-top: 1px solid var(--glass-border);
+    margin: 1.2em 0;
+  }
+  .prose :global(table) {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0.8em 0;
+    font-size: 13px;
+  }
+  .prose :global(th), .prose :global(td) {
+    border: 1px solid var(--glass-border);
+    padding: 6px 10px;
+    text-align: left;
+  }
+  .prose :global(th) {
+    background: rgba(255,255,255,0.04);
+    font-weight: 700;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
 
+  /* ── View Results floating badge ────────────────────────────────────────── */
+  .results-badge {
+    position: absolute;
+    bottom: 16px;
+    right: 16px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    background: var(--glass-tinted);
+    border: 1px solid var(--glass-tinted-border);
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-accent);
+    cursor: pointer;
+    z-index: 15;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    transition: all var(--t-fast);
+    animation: slide-up 0.2s ease-out;
+  }
+  .results-badge:hover {
+    background: rgba(63,185,80,0.15);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+  }
+
+  @keyframes slide-up {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ── Reply bar (used in results modal) ─────────────────────────────────── */
   .reply-bar {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 16px 10px;
+    padding: 10px 18px 12px;
     border-top: 1px solid var(--glass-border);
-    position: sticky;
-    bottom: 0;
-    background: inherit;
+    flex-shrink: 0;
   }
   .reply-input {
     flex: 1;

@@ -131,7 +131,7 @@
 
     <div class="modal-footer">
       {#if !isNew}
-        <button class="danger" onclick={remove} style="margin-right: auto">Remove</button>
+        <button class="danger btn-remove" onclick={remove}>Remove</button>
       {/if}
       <button class="ghost" onclick={onclose}>Cancel</button>
       <button class="primary" onclick={save} disabled={!draft.name.trim() || !draft.id.trim()}>
@@ -194,4 +194,5 @@
     text-transform: none;
     letter-spacing: 0;
   }
+  .btn-remove { margin-right: auto; }
 </style>

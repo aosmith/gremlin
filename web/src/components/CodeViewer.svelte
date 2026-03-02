@@ -54,7 +54,7 @@
     </div>
     <div class="header-actions">
       {#if content}
-        <button class="ghost" onclick={copyToClipboard} title="Copy to clipboard" style="font-size:11px">
+        <button class="ghost btn-sm" onclick={copyToClipboard} title="Copy to clipboard">
           ⎘ Copy
         </button>
       {/if}
@@ -143,6 +143,7 @@
     gap: 4px;
     flex-shrink: 0;
   }
+  .btn-sm { font-size: 11px; }
 
   /* Body */
   .viewer-body {
