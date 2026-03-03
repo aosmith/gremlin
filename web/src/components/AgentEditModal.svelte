@@ -14,9 +14,11 @@
   }
   const { agentId, onclose }: Props = $props()
 
-  // agentId is stable for the lifetime of this modal — no need for $derived
-  // eslint-disable-next-line svelte/no-reactive-literals
-  const isNew = agentId === '__new__'
+  // agentId is stable for the lifetime of this modal
+  // svelte-ignore state_referenced_locally
+  const _agentId = agentId
+  const isNew = _agentId === '__new__' || _agentId.startsWith('__new__:')
+  const suggestedName = _agentId.startsWith('__new__:') ? _agentId.slice('__new__:'.length) : ''
 
   function makeId(name: string): string {
     return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
@@ -28,8 +30,8 @@
     existing
       ? { ...existing }
       : {
-          id: '',
-          name: '',
+          id: suggestedName ? makeId(suggestedName) : '',
+          name: suggestedName || '',
           role: 'worker',
           systemPrompt: '',
           color: AGENT_COLORS[Math.floor(Math.random() * AGENT_COLORS.length)],
@@ -41,14 +43,32 @@
     if (isNew && draft.name) draft.id = makeId(draft.name)
   })
 
+  function resolveSuggestion(created: boolean) {
+    if (store.pendingAgentSuggestion) {
+      store.pendingAgentSuggestion.resolve(created)
+      store.pendingAgentSuggestion = null
+    }
+  }
+
   function save() {
     if (!draft.name.trim() || !draft.id.trim()) return
     store.upsertAgent(draft)
+    // If this was a mid-run suggestion, also register the agent in the runner
+    if (suggestedName && store.runner) {
+      store.runner.addAgent(draft)
+    }
+    resolveSuggestion(true)
+    onclose()
+  }
+
+  function cancel() {
+    resolveSuggestion(false)
     onclose()
   }
 
   function remove() {
     if (!isNew) store.removeAgent(agentId as string)
+    resolveSuggestion(false)
     onclose()
   }
 
@@ -59,7 +79,7 @@
   <div class="modal">
     <div class="modal-header">
       {isNew ? '+ New Agent' : `Edit · ${existing?.name ?? agentId}`}
-      <button class="ghost icon" onclick={onclose}>✕</button>
+      <button class="ghost icon" onclick={cancel}>✕</button>
     </div>
 
     <div class="modal-body">
@@ -133,7 +153,7 @@
       {#if !isNew}
         <button class="danger btn-remove" onclick={remove}>Remove</button>
       {/if}
-      <button class="ghost" onclick={onclose}>Cancel</button>
+      <button class="ghost" onclick={cancel}>Cancel</button>
       <button class="primary" onclick={save} disabled={!draft.name.trim() || !draft.id.trim()}>
         {isNew ? 'Add Agent' : 'Save'}
       </button>

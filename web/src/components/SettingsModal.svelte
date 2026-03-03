@@ -84,6 +84,7 @@
 
       <!-- Provider grid -->
       <div class="field">
+        <!-- svelte-ignore a11y_label_has_associated_control -->
         <label>Provider</label>
         <div class="provider-grid">
           {#each PROVIDERS as p (p.id)}
@@ -107,6 +108,7 @@
 
       <!-- Model selection -->
       <div class="field">
+        <!-- svelte-ignore a11y_label_has_associated_control -->
         <label>Model</label>
         <div class="model-row">
           {#if modelList.length > 0}

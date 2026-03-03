@@ -199,7 +199,17 @@ class GremlinStore {
   showAgentEdit   = $state<string | null>(null)
   showModeCreate  = $state<boolean>(false)
 
-  private runner: AgentRunner | null = null
+  /** Pending suggestion when an agent hallucinates an unknown agent name. */
+  pendingAgentSuggestion = $state<{ name: string, resolve: (created: boolean) => void } | null>(null)
+
+  /** Pending prompt when round limit is exhausted. */
+  pendingRoundsExhausted = $state<{
+    currentRound: number
+    maxRounds: number
+    resolve: (result: { extraRounds: number; instruction: string } | null) => void
+  } | null>(null)
+
+  runner: AgentRunner | null = null
   private saveTimer: ReturnType<typeof setTimeout> | null = null
 
   // ── Session save helper (debounced — one write per second max) ─────────
@@ -316,6 +326,35 @@ class GremlinStore {
   resetAgents() {
     this.agentConfigs = agentsForMode(this.appMode, this.customModes)
     saveAgentsForMode(this.appMode, this.agentConfigs)
+  }
+
+  /** User chose to create the hallucinated agent — open AgentEditModal pre-filled with the first name. */
+  acceptAgentSuggestion() {
+    if (!this.pendingAgentSuggestion) return
+    const firstName = this.pendingAgentSuggestion.name.split(', ')[0]
+    this.showAgentEdit = `__new__:${firstName}`
+    // resolve is called from AgentEditModal on save/close
+  }
+
+  /** User chose to skip — continue the run with orchestrator reroute. */
+  dismissAgentSuggestion() {
+    if (!this.pendingAgentSuggestion) return
+    this.pendingAgentSuggestion.resolve(false)
+    this.pendingAgentSuggestion = null
+  }
+
+  /** User chose to continue with more rounds. */
+  continueWithRounds(extraRounds: number, instruction: string) {
+    if (!this.pendingRoundsExhausted) return
+    this.pendingRoundsExhausted.resolve({ extraRounds, instruction })
+    this.pendingRoundsExhausted = null
+  }
+
+  /** User chose to synthesize immediately. */
+  synthesizeNow() {
+    if (!this.pendingRoundsExhausted) return
+    this.pendingRoundsExhausted.resolve(null)
+    this.pendingRoundsExhausted = null
   }
 
   // ── Filesystem ────────────────────────────────────────────────────────────
@@ -565,6 +604,16 @@ class GremlinStore {
               this.writtenFiles = [...this.writtenFiles, path].sort()
             }
           }
+        },
+        onUnknownAgent: (_fromAgent, name) => {
+          return new Promise<boolean>((resolve) => {
+            this.pendingAgentSuggestion = { name, resolve }
+          })
+        },
+        onRoundsExhausted: (currentRound, maxRounds) => {
+          return new Promise((resolve) => {
+            this.pendingRoundsExhausted = { currentRound, maxRounds, resolve }
+          })
         },
         onProgress: (p) => {
           this.webllmProgress = p

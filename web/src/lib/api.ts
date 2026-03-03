@@ -1,6 +1,6 @@
 import type { LLMMessage, Settings } from './types'
 import { PROVIDERS } from './types'
-import type { OAITool, ToolCallRecord } from './tools'
+import type { OAITool, ToolCallRecord, ToolExecutor } from './tools'
 import { toAnthropicTools, executeTool } from './tools'
 import { callWebLLM } from './webllm'
 import type { ProgressCallback } from './webllm'
@@ -61,14 +61,20 @@ export async function callLLMWithTools(
   agentId: string,
   onToolCall: (e: ToolCallEvent) => void,
   signal?: AbortSignal,
+  executor?: ToolExecutor,
+  onProgress?: ProgressCallback,
 ): Promise<string> {
+  // Gemini has no tool calling support — fall back to text-only
+  if (settings.apiFormat === 'gemini') {
+    return callGemini(systemPrompt, messages, settings, signal)
+  }
   if (settings.apiFormat === 'anthropic') {
-    return callAnthropicWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall, signal)
+    return callAnthropicWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall, signal, executor)
   }
   if (settings.apiFormat === 'webllm') {
-    return callWebLLMWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall)
+    return callWebLLMWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall, executor, onProgress)
   }
-  return callOpenAIWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall, signal)
+  return callOpenAIWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall, signal, executor)
 }
 
 // ── OpenAI-compatible ─────────────────────────────────────────────────────────
@@ -94,8 +100,8 @@ async function callOpenAIWithTools(
   agentId: string,
   onToolCall: (e: ToolCallEvent) => void,
   signal?: AbortSignal,
+  executor?: ToolExecutor,
 ): Promise<string> {
-  // Internal mutable message list for the tool loop
   type OAIMsg =
     | { role: 'system' | 'user' | 'assistant'; content: string | null; tool_calls?: OAIToolCall[] }
     | { role: 'tool'; tool_call_id: string; content: string }
@@ -106,10 +112,22 @@ async function callOpenAIWithTools(
     function: { name: string; arguments: string }
   }
 
+  let activeTools: OAITool[] | undefined = tools
   const msgs: OAIMsg[] = [{ role: 'system', content: system }, ...messages]
 
   for (let round = 0; round < 20; round++) {
-    const resp = await oaiFetch(settings, msgs, tools, signal)
+    let resp: Response
+    try {
+      resp = await oaiFetch(settings, msgs, activeTools, signal)
+    } catch (err) {
+      // If the model doesn't support tools, retry without them (text-only fallback)
+      if (activeTools?.length && err instanceof Error && err.message.includes('does not support tools')) {
+        activeTools = undefined
+        resp = await oaiFetch(settings, msgs, undefined, signal)
+      } else {
+        throw err
+      }
+    }
     const data = await resp.json()
     const choice = data?.choices?.[0]
 
@@ -124,16 +142,14 @@ async function callOpenAIWithTools(
         let args: Record<string, unknown> = {}
         try { args = JSON.parse(tc.function.arguments) } catch { /* leave empty */ }
 
-        const record = await executeTool(tc.id, tc.function.name, args)
+        const exec = executor ?? executeTool
+        const record = await exec(tc.id, tc.function.name, args)
         onToolCall({ agentId, record })
 
         msgs.push({ role: 'tool', tool_call_id: tc.id, content: record.result })
       }
-      // Continue the loop to let the model react to tool results
     } else {
-      // Model is done with tools — return final text
-      const text = typeof msg.content === 'string' ? msg.content : ''
-      return text
+      return typeof msg.content === 'string' ? msg.content : ''
     }
   }
 
@@ -156,6 +172,10 @@ function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[], si
   if (tools?.length) {
     body.tools = tools
     body.tool_choice = 'auto'
+  }
+  // Keep Ollama models loaded during a run (default 5m is too short for multi-agent sessions)
+  if (settings.apiEndpoint.includes('localhost:11434')) {
+    body.keep_alive = '30m'
   }
 
   return proxiedFetch(settings.apiEndpoint, { method: 'POST', headers, body: JSON.stringify(body), signal }, settings)
@@ -194,6 +214,7 @@ async function callAnthropicWithTools(
   agentId: string,
   onToolCall: (e: ToolCallEvent) => void,
   signal?: AbortSignal,
+  executor?: ToolExecutor,
 ): Promise<string> {
   type ABlock =
     | { type: 'text'; text: string }
@@ -217,7 +238,8 @@ async function callAnthropicWithTools(
 
       const toolResults: ABlock[] = []
       for (const tu of toolUseBlocks) {
-        const record = await executeTool(tu.id, tu.name, tu.input)
+        const exec = executor ?? executeTool
+        const record = await exec(tu.id, tu.name, tu.input)
         onToolCall({ agentId, record })
         toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: record.result })
       }
@@ -274,11 +296,9 @@ async function callWebLLMWithTools(
   tools: OAITool[],
   agentId: string,
   onToolCall: (e: ToolCallEvent) => void,
+  executor?: ToolExecutor,
+  onProgress?: ProgressCallback,
 ): Promise<string> {
-  // WebLLM may not support native tool calling in all models.
-  // Fall back to a prompt-based tool loop using a schema description.
-  // For models that do support tool_calls via the MLC engine, this still works
-  // because we use the OpenAI-compatible interface.
   const { getEngine } = await import('./webllm')
 
   type OAIMsg =
@@ -291,7 +311,7 @@ async function callWebLLMWithTools(
     function: { name: string; arguments: string }
   }
 
-  const eng = await getEngine(settings.model)
+  const eng = await getEngine(settings.model, onProgress)
   const msgs: OAIMsg[] = [{ role: 'system', content: system }, ...messages]
 
   for (let round = 0; round < 20; round++) {
@@ -314,7 +334,8 @@ async function callWebLLMWithTools(
         let args: Record<string, unknown> = {}
         try { args = JSON.parse(tc.function.arguments) } catch { /* leave empty */ }
 
-        const record = await executeTool(tc.id, tc.function.name, args)
+        const exec = executor ?? executeTool
+        const record = await exec(tc.id, tc.function.name, args)
         onToolCall({ agentId, record })
         msgs.push({ role: 'tool', tool_call_id: tc.id, content: record.result })
       }

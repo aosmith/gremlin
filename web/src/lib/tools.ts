@@ -75,6 +75,58 @@ export const DEV_TOOLS: OAITool[] = [
   },
 ]
 
+// ── Protocol tools (multi-agent coordination) ────────────────────────────────
+
+/** Protocol tools used by all agents for inter-agent communication. */
+export const PROTOCOL_TOOLS: OAITool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'send_message',
+      description:
+        'Send a message to another agent in the GREMLIN multi-agent system. ' +
+        'Use the agent\'s ID or name from the list of available agents.',
+      parameters: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Target agent ID or name' },
+          content: { type: 'string', description: 'Message content to send' },
+        },
+        required: ['to', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'mark_done',
+      description:
+        'Signal that you have completed your assigned task. ' +
+        'Optionally include a final result string (synthesizers MUST include their full report here).',
+      parameters: {
+        type: 'object',
+        properties: {
+          result: {
+            type: 'string',
+            description: 'Final result or conclusion (required for synthesizers, optional for others)',
+          },
+        },
+        required: [],
+      },
+    },
+  },
+]
+
+/** Set of protocol tool names for quick lookup. */
+export const PROTOCOL_TOOL_NAMES = new Set(PROTOCOL_TOOLS.map((t) => t.function.name))
+
+/** A custom function that executes a tool call. */
+export type ToolExecutor = (
+  id: string,
+  name: string,
+  args: Record<string, unknown>,
+) => Promise<ToolCallRecord>
+
 // ── Anthropic-format tool definitions ─────────────────────────────────────────
 // Derived from DEV_TOOLS so they stay in sync automatically.
 

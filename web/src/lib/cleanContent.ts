@@ -76,44 +76,38 @@ export function cleanContent(raw: string): string {
 /**
  * Format output for the Results Modal.
  * Produces styled Markdown with all fields visible.
- * Runs at RENDER time so it always processes the latest raw data.
+ * Handles both plain Markdown (new) and legacy JSON-wrapped output.
  */
 export function formatOutputAsMarkdown(raw: string): string {
   if (!raw) return ''
 
+  // Try to parse as JSON (legacy format or raw model JSON)
   const obj = tryParseJson(raw)
   if (!obj) {
-    // Not JSON — prettify snake_case names and return as-is
+    // Not JSON — already human-readable, just clean up snake_case names
     return prettifySnakeCase(raw)
   }
 
+  // If it parsed as JSON, extract human-readable content from protocol fields
   const sections: string[] = []
 
   const hasResult = typeof obj.result === 'string' && obj.result.trim().length > 0
   const hasAnalysis = typeof obj.analysis === 'string' && obj.analysis.trim().length > 0
 
-  // If we have a substantial result, that's the primary content.
-  // Analysis is internal reasoning — only show it if there's no result,
-  // or as a collapsed detail when result is present.
   if (hasResult) {
-    const resultText = obj.result as string
-    // Recursively format in case result itself contains JSON
-    sections.push(formatOutputAsMarkdown(resultText.trim()))
+    const resultText = (obj.result as string).trim()
+    sections.push(formatOutputAsMarkdown(resultText))
 
-    // If analysis adds meaningful context beyond the result, show it under a heading
     if (hasAnalysis) {
       const analysisText = (obj.analysis as string).trim()
-      // Only include if analysis is non-trivial and different from result
-      if (analysisText.length > 50 && analysisText !== resultText.trim()) {
+      if (analysisText.length > 50 && analysisText !== resultText) {
         sections.push(`### Analysis\n\n${prettifySnakeCase(analysisText)}`)
       }
     }
   } else if (hasAnalysis) {
-    // No result — analysis is the main content
     sections.push(formatOutputAsMarkdown((obj.analysis as string).trim()))
   }
 
-  // Messages / directives
   if (Array.isArray(obj.messages) && obj.messages.length > 0) {
     const items = obj.messages
       .filter((m: any) => m.to && m.content)
@@ -128,13 +122,13 @@ export function formatOutputAsMarkdown(raw: string): string {
 
 /**
  * Extract a clean plain-text version of the output for clipboard copy.
- * Strips JSON wrapper and returns the human-readable content.
+ * Handles both plain Markdown and legacy JSON-wrapped output.
  */
 export function cleanOutputForCopy(raw: string): string {
   if (!raw) return ''
 
   const obj = tryParseJson(raw)
-  if (!obj) return raw
+  if (!obj) return raw  // Already plain text
 
   const parts: string[] = []
 
@@ -142,7 +136,6 @@ export function cleanOutputForCopy(raw: string): string {
     parts.push(obj.result.trim())
   }
   if (typeof obj.analysis === 'string' && obj.analysis.trim()) {
-    // Only include analysis if different from result
     const result = typeof obj.result === 'string' ? obj.result.trim() : ''
     if (obj.analysis.trim() !== result) {
       parts.push(obj.analysis.trim())

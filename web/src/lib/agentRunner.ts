@@ -10,12 +10,21 @@
  * In engineering mode (tools provided) agents can call write_file / read_file / list_directory.
  */
 
-import { callLLM, callLLMWithTools } from './api'
+import { callLLMWithTools } from './api'
 import type { ToolCallEvent } from './api'
-import type { OAITool } from './tools'
+import type { OAITool, ToolExecutor, ToolCallRecord } from './tools'
+import { PROTOCOL_TOOLS, PROTOCOL_TOOL_NAMES, executeTool } from './tools'
 import type { ProgressCallback } from './webllm'
 import * as coord from './coordinator'
 import type { AgentConfig, AgentResponse, AgentStatus, LLMMessage, Message, Settings } from './types'
+
+/** State collected from protocol tool calls during a single agent turn. */
+interface CollectedState {
+  messages: Array<{ to: string; content: string }>
+  done: boolean
+  result: string | null
+  hadProtocolCalls: boolean
+}
 
 export interface RunnerCallbacks {
   onMessage: (msg: Message) => void
@@ -25,6 +34,10 @@ export interface RunnerCallbacks {
   onRound?: (round: number) => void
   onToolCall?: (e: ToolCallEvent) => void
   onProgress?: ProgressCallback   // WebLLM model-load progress
+  /** Called when an agent tries to message a hallucinated agent name. Returns true if user created the agent. */
+  onUnknownAgent?: (fromAgent: string, name: string) => Promise<boolean>
+  /** Called when round limit is hit. Returns extra rounds + instruction, or null to force-synthesize immediately. */
+  onRoundsExhausted?: (currentRound: number, maxRounds: number) => Promise<{ extraRounds: number; instruction: string } | null>
   onDone: () => void
 }
 
@@ -48,11 +61,53 @@ export class AgentRunner {
   private loopRunning = false
   private agents: AgentConfig[] = []
   private round = 0
+  /** Names already skipped or created — don't prompt again. */
+  private seenUnknownAgents = new Set<string>()
+  /** Whether we've already shown the suggestion modal this run. */
+  private promptedForAgents = false
+  /** Outgoing message content per agent — used to build detailed output. */
+  private sentContent = new Map<string, string[]>()
 
   abort() {
     this.aborted = true
     this.abortController.abort()
     this.histories.clear()
+  }
+
+  /** Register a new agent mid-run (e.g. created from a hallucinated name). */
+  addAgent(agent: AgentConfig): void {
+    this.configs.set(agent.id, agent)
+    this.agents.push(agent)
+    this.histories.set(agent.id, [])
+    this.processedCounts.set(agent.id, 0)
+    this.sentContent.set(agent.id, [])
+    coord.addAgent(agent)
+  }
+
+  /** Combine protocol tools with any dev tools (file ops in engineering mode). */
+  private buildAllTools(): OAITool[] {
+    return [...PROTOCOL_TOOLS, ...this.tools]
+  }
+
+  /** Create a ToolExecutor that captures protocol tool calls into mutable state. */
+  private createExecutor(collected: CollectedState): ToolExecutor {
+    return async (id: string, name: string, args: Record<string, unknown>): Promise<ToolCallRecord> => {
+      if (name === 'send_message') {
+        const to = String(args.to ?? '')
+        const content = String(args.content ?? '')
+        collected.messages.push({ to, content })
+        collected.hadProtocolCalls = true
+        return { id, name, args, result: `Message queued for ${to}`, isError: false }
+      }
+      if (name === 'mark_done') {
+        collected.done = true
+        collected.result = typeof args.result === 'string' ? args.result : null
+        collected.hadProtocolCalls = true
+        return { id, name, args, result: 'Marked as done', isError: false }
+      }
+      // Delegate to real tool executor (file ops)
+      return executeTool(id, name, args)
+    }
   }
 
   async run(
@@ -72,6 +127,9 @@ export class AgentRunner {
     this.configs = new Map(agents.map((a) => [a.id, a]))
     this.histories = new Map(agents.map((a) => [a.id, []]))
     this.processedCounts = new Map(agents.map((a) => [a.id, 0]))
+    this.seenUnknownAgents = new Set()
+    this.promptedForAgents = false
+    this.sentContent = new Map(agents.map((a) => [a.id, []]))
 
     // Reset WASM coordinator state and register all agents
     coord.clearSession()
@@ -110,6 +168,24 @@ export class AgentRunner {
         })
 
         if (pending.length === 0) {
+          // Deadlock guard: if no pending messages but synthesizer hasn't run,
+          // force all waiting workers to "done" and trigger synthesis.
+          const synthesizer = agents.find((a) => a.role === 'synthesizer')
+          const synthStatus = synthesizer ? coord.getAgentStatus(synthesizer.id) : null
+          if (synthesizer && synthStatus !== 'done') {
+            const workers = agents.filter((a) => a.role === 'worker' || a.role === 'custom')
+            const waitingWorkers = workers.filter((w) => coord.getAgentStatus(w.id) !== 'done' && coord.getAgentStatus(w.id) !== 'error')
+            if (waitingWorkers.length > 0) {
+              this.cb.onLog(`Deadlock detected — ${waitingWorkers.map((w) => w.name).join(', ')} waiting with no messages. Forcing synthesis.`)
+              for (const w of waitingWorkers) {
+                coord.updateAgentStatus(w.id, 'done')
+                this.cb.onStatusUpdate(w.id, 'done')
+              }
+            }
+            // Feed all worker output to synthesizer and continue the loop
+            this.forceSynthesis(synthesizer, agents)
+            continue  // re-enter the loop — synthesizer will now be pending
+          }
           this.cb.onLog('No pending messages — session complete')
           break
         }
@@ -152,8 +228,15 @@ export class AgentRunner {
 
           if (allWorkersDone && synthStatus !== 'done') {
             const workerSummaries = workers.map((w) => {
+              // Skip if synthesizer already received messages from this worker
               const msgs = coord.getMessagesFor(synthesizer.id).filter((m) => m.fromAgent === w.id)
               if (msgs.length > 0) return null
+              // Prefer sent messages (detailed work) over last response summary
+              const sent = this.sentContent.get(w.id) ?? []
+              if (sent.length > 0) {
+                const unique = [...new Set(sent)].filter((s) => s.trim().length > 20)
+                if (unique.length > 0) return `[${w.name}]:\n${unique.join('\n\n')}`
+              }
               const hist = this.histories.get(w.id) ?? []
               const lastAssistant = [...hist].reverse().find((m) => m.role === 'assistant')
               return lastAssistant ? `[${w.name}]: ${lastAssistant.content}` : null
@@ -197,6 +280,52 @@ export class AgentRunner {
           }
         }
       }
+
+      // If we exited because rounds were exhausted, ask the user what to do
+      if (this.round > this.settings.maxRounds && !this.aborted) {
+        const synthesizer = agents.find((a) => a.role === 'synthesizer')
+        const synthStatus = synthesizer ? coord.getAgentStatus(synthesizer.id) : null
+
+        if (synthesizer && synthStatus !== 'done') {
+          // Ask user: continue with more rounds, or synthesize now?
+          let continuation: { extraRounds: number; instruction: string } | null = null
+          if (this.cb.onRoundsExhausted) {
+            continuation = await this.cb.onRoundsExhausted(this.round, this.settings.maxRounds)
+          }
+
+          if (continuation && !this.aborted) {
+            // User wants to continue — bump the limit, inject their instruction, resume
+            this.settings = { ...this.settings, maxRounds: this.settings.maxRounds + continuation.extraRounds }
+            this.round-- // offset the increment at the top of the loop
+
+            const orchestrator = agents.find((a) => a.role === 'orchestrator')
+            const target = orchestrator ?? synthesizer
+            if (continuation.instruction.trim()) {
+              this.emit({ fromAgent: 'user', toAgent: target.id, content: continuation.instruction, type: 'human', timestamp: Date.now(), round: this.round })
+            }
+
+            // Reset done status on non-done agents so they can continue
+            for (const a of agents) {
+              const status = coord.getAgentStatus(a.id)
+              if (status === 'done' && a.role !== 'synthesizer') continue // leave finished workers alone
+              if (status !== 'done' && status !== 'error') {
+                coord.updateAgentStatus(a.id, 'waiting')
+                this.cb.onStatusUpdate(a.id, 'waiting')
+              }
+            }
+
+            this.cb.onLog(`Adding ${continuation.extraRounds} rounds (new limit: ${this.settings.maxRounds})`)
+            await this.runLoop() // resume the loop with new budget
+          } else if (!this.aborted) {
+            // User chose to synthesize now (or no callback)
+            this.cb.onLog(`⚠ Round limit (${this.settings.maxRounds}) reached — forcing synthesis with available work`)
+            this.forceSynthesis(synthesizer, agents)
+            await this.runAgentTurn(synthesizer, this.round)
+          }
+        } else if (!synthesizer) {
+          this.cb.onLog(`⚠ Round limit (${this.settings.maxRounds}) reached — no synthesizer to produce final output`)
+        }
+      }
     } finally {
       this.loopRunning = false
     }
@@ -207,7 +336,18 @@ export class AgentRunner {
     this.emit({ fromAgent: 'user', toAgent: targetAgentId, content, type: 'human', timestamp: Date.now(), round: this.round })
     // If the main loop has already exited, resume it to process this message
     if (!this.loopRunning && !this.aborted) {
+      // Reset for a new cycle: give round budget, wake up agents, clear output tracking
+      this.round = 0
+      this.sentContent = new Map(this.agents.map((a) => [a.id, []]))
+      for (const a of this.agents) {
+        const status = coord.getAgentStatus(a.id)
+        if (status === 'done' || status === 'error') {
+          coord.updateAgentStatus(a.id, 'waiting')
+          this.cb.onStatusUpdate(a.id, 'waiting')
+        }
+      }
       coord.setRunning(true)
+      this.cb.onLog('Follow-up received — starting new cycle')
       this.runLoop().then(() => {
         coord.setRunning(false)
         this.cb?.onDone()
@@ -254,6 +394,43 @@ export class AgentRunner {
     this.cb.onMessage({ ...msg, id })
   }
 
+  /** Collect all worker outputs and feed them to the synthesizer for a final forced run. */
+  private forceSynthesis(synthesizer: AgentConfig, agents: AgentConfig[]): void {
+    const workers = agents.filter((a) => a.role === 'worker' || a.role === 'custom')
+    const summaries = workers.map((w) => {
+      // Prefer sent messages (detailed work product) over last response summary
+      const sent = this.sentContent.get(w.id) ?? []
+      if (sent.length > 0) {
+        const unique = [...new Set(sent)].filter((s) => s.trim().length > 20)
+        if (unique.length > 0) return `[${w.name}]:\n${unique.join('\n\n')}`
+      }
+      const hist = this.histories.get(w.id) ?? []
+      const lastReply = [...hist].reverse().find((m) => m.role === 'assistant')
+      return lastReply ? `[${w.name}]: ${lastReply.content}` : null
+    }).filter(Boolean)
+
+    if (summaries.length > 0) {
+      this.emit({
+        fromAgent: 'system',
+        toAgent: synthesizer.id,
+        content: 'Round limit reached. Synthesize all available findings NOW:\n\n' + summaries.join('\n\n'),
+        type: 'system',
+        timestamp: Date.now(),
+        round: this.round,
+      })
+    }
+  }
+
+  private rerouteToOrchestrator(agent: AgentConfig, outMsg: { to: string; content: string }, round: number): void {
+    const orchestrator = this.agents.find((a) => a.role === 'orchestrator')
+    if (orchestrator && orchestrator.id !== agent.id) {
+      this.cb.onLog(`↪ ${agent.name} → "${outMsg.to}" not found — rerouted to ${orchestrator.name}`)
+      this.emit({ fromAgent: agent.id, toAgent: orchestrator.id, content: `[intended for "${outMsg.to}"] ${outMsg.content}`, type: 'message', timestamp: Date.now(), round })
+    } else {
+      this.cb.onLog(`⚠ ${agent.name} tried to message unknown agent "${outMsg.to}" — skipped`)
+    }
+  }
+
   private async runAgentTurn(agent: AgentConfig, round: number): Promise<void> {
     const allMsgs = coord.getMessagesFor(agent.id)
     const processed = this.processedCounts.get(agent.id) ?? 0
@@ -284,56 +461,106 @@ export class AgentRunner {
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
-        let response: string
-
         const signal = this.abortController.signal
-        if (this.tools.length > 0) {
-          response = await callLLMWithTools(
-            systemPrompt,
-            [...history, { role: 'user', content: userContent }],
-            agentSettings,
-            this.tools,
-            agent.id,
-            (e) => {
+        const collected: CollectedState = { messages: [], done: false, result: null, hadProtocolCalls: false }
+        const executor = this.createExecutor(collected)
+
+        const response = await callLLMWithTools(
+          systemPrompt,
+          [...history, { role: 'user', content: userContent }],
+          agentSettings,
+          this.buildAllTools(),
+          agent.id,
+          (e) => {
+            // Only fire UI callback + log for non-protocol tools (dev tools)
+            if (!PROTOCOL_TOOL_NAMES.has(e.record.name)) {
               this.cb.onToolCall?.(e)
               const summary = e.record.isError
                 ? `✖ ${e.record.name} failed: ${e.record.result}`
                 : `🔧 ${e.record.name}(${JSON.stringify(e.record.args)}) → ${e.record.result.slice(0, 120)}`
               this.emit({ fromAgent: agent.id, toAgent: 'system', content: summary, type: 'system', timestamp: Date.now(), round })
-            },
-            signal,
-          )
-        } else {
-          response = await callLLM(
-            systemPrompt,
-            [...history, { role: 'user', content: userContent }],
-            agentSettings,
-            this.cb.onProgress,
-            signal,
-          )
-        }
+            }
+          },
+          signal,
+          executor,
+          this.cb.onProgress,
+        )
 
         // Persist conversation history (pruned to last N messages)
         const updated: LLMMessage[] = [...history, { role: 'user', content: userContent }, { role: 'assistant', content: response }]
         this.histories.set(agent.id, updated.length > MAX_HISTORY_PER_AGENT ? updated.slice(-MAX_HISTORY_PER_AGENT) : updated)
 
-        const parsed = this.parseResponse(response)
+        // Prefer tool-collected state; fall back to JSON parsing for Gemini / non-compliant models
+        const parsed: AgentResponse = collected.hadProtocolCalls
+          ? { analysis: response, messages: collected.messages, done: collected.done, result: collected.result }
+          : this.parseResponse(response)
 
-        // Route outgoing messages
-        for (const outMsg of parsed.messages) {
-          const target = this.resolveAgent(outMsg.to)
-          if (!target) {
-            // No match at all — route to the orchestrator instead of dropping
-            const orchestrator = this.agents.find((a) => a.role === 'orchestrator')
-            if (orchestrator && orchestrator.id !== agent.id) {
-              this.cb.onLog(`↪ ${agent.name} → "${outMsg.to}" not found — rerouted to ${orchestrator.name}`)
-              this.emit({ fromAgent: agent.id, toAgent: orchestrator.id, content: `[intended for "${outMsg.to}"] ${outMsg.content}`, type: 'message', timestamp: Date.now(), round })
-            } else {
-              this.cb.onLog(`⚠ ${agent.name} tried to message unknown agent "${outMsg.to}" — skipped`)
+        // Guard: if orchestrator claims done on round 1 with no messages, it failed to
+        // delegate (common with fine-tuned / small models that ignore the JSON protocol).
+        // Force it to stay active and auto-distribute the task to all workers.
+        if (agent.role === 'orchestrator' && this.round <= 1 && parsed.messages.length === 0) {
+          parsed.done = false
+          const workers = this.agents.filter((a) => a.role === 'worker' || a.role === 'custom')
+          if (workers.length > 0) {
+            // Use the orchestrator's raw analysis (or the original task) as the assignment
+            const taskContent = parsed.analysis || parsed.result || userContent
+            for (const w of workers) {
+              parsed.messages.push({ to: w.id, content: taskContent })
             }
-            continue
+            this.cb.onLog(`↪ ${agent.name} didn't delegate — auto-distributing task to ${workers.map((w) => w.name).join(', ')}`)
           }
-          this.emit({ fromAgent: agent.id, toAgent: target.id, content: outMsg.content, type: 'message', timestamp: Date.now(), round })
+        }
+
+        // Route outgoing messages — collect unresolved names first, then prompt once
+        const unresolved: Array<{ outMsg: { to: string; content: string }; cleanedName: string }> = []
+
+        for (const outMsg of parsed.messages) {
+          // Track all outgoing content for the final output
+          const bucket = this.sentContent.get(agent.id)
+          if (bucket) bucket.push(outMsg.content)
+
+          const target = this.resolveAgent(outMsg.to)
+          if (target) {
+            this.emit({ fromAgent: agent.id, toAgent: target.id, content: outMsg.content, type: 'message', timestamp: Date.now(), round })
+          } else {
+            const cleaned = outMsg.to.trim().replace(/^["']+|["']+$/g, '').trim()
+            if (!this.seenUnknownAgents.has(cleaned.toLowerCase())) {
+              unresolved.push({ outMsg, cleanedName: cleaned })
+            } else {
+              // Already seen — silently reroute to orchestrator
+              this.rerouteToOrchestrator(agent, outMsg, round)
+            }
+          }
+        }
+
+        // Prompt the user once per run with the first batch of unknown names
+        if (unresolved.length > 0 && !this.promptedForAgents && this.cb.onUnknownAgent) {
+          // Show all unknown names in one prompt (just the first batch)
+          const names = unresolved.map((u) => u.cleanedName)
+          this.promptedForAgents = true
+          const created = await this.cb.onUnknownAgent(agent.id, names.join(', '))
+          if (created) {
+            // Re-resolve — user may have created one of them
+            for (const { outMsg } of unresolved) {
+              const target = this.resolveAgent(outMsg.to)
+              if (target) {
+                this.emit({ fromAgent: agent.id, toAgent: target.id, content: outMsg.content, type: 'message', timestamp: Date.now(), round })
+              } else {
+                this.rerouteToOrchestrator(agent, outMsg, round)
+              }
+            }
+          } else {
+            for (const { outMsg } of unresolved) {
+              this.rerouteToOrchestrator(agent, outMsg, round)
+            }
+          }
+          for (const { cleanedName } of unresolved) this.seenUnknownAgents.add(cleanedName.toLowerCase())
+        } else {
+          // Already prompted or no callback — just reroute
+          for (const { outMsg, cleanedName } of unresolved) {
+            this.seenUnknownAgents.add(cleanedName.toLowerCase())
+            this.rerouteToOrchestrator(agent, outMsg, round)
+          }
         }
 
         const newStatus: AgentStatus = parsed.done ? 'done' : 'waiting'
@@ -341,7 +568,7 @@ export class AgentRunner {
         this.cb.onStatusUpdate(agent.id, newStatus)
 
         if (parsed.done && agent.role === 'synthesizer') {
-          const output = this.formatSynthesizerOutput(parsed)
+          const output = this.formatSynthesizerOutput(parsed, agent)
           if (output) this.cb.onOutput(output)
         }
 
@@ -378,68 +605,73 @@ export class AgentRunner {
       .map((a) => `  • ${a.id} (${a.name}) — ${a.role}`)
       .join('\n')
 
-    const toolSection = this.tools.length > 0 ? `
-File system tools available to you:
+    const devToolSection = this.tools.length > 0 ? `
+File system tools also available:
   • write_file(path, content)   — create or overwrite a file (parent dirs auto-created)
   • read_file(path)             — read full file content
   • list_directory(path)        — list files and sub-directories
-All paths are relative to the project root. Use tools to implement your tasks directly.
+All paths are relative to the project root.
 ` : ''
 
+    const remaining = this.settings.maxRounds - this.round
+    const roundBudget = `\n\nROUND BUDGET: This is round ${this.round} of ${this.settings.maxRounds}. ${remaining <= 2 ? 'TIME IS ALMOST UP — wrap up and call mark_done() NOW.' : `You have ${remaining} rounds remaining. Be efficient.`}`
+
     return `${agent.systemPrompt}
-${toolSection}
+${devToolSection}
 ---
 You are operating inside GREMLIN, a multi-agent coordination system.
 Your agent ID : ${agent.id}
-Your name    : ${agent.name}
+Your name     : ${agent.name}
 
 Other agents you can communicate with:
 ${others}
 
-IMPORTANT — You MUST reply with valid JSON only (no markdown, no prose outside the JSON):
+COMMUNICATION — Use the provided tool functions:
+  • send_message(to, content) — send a message to another agent (use their ID or name)
+  • mark_done(result?)        — signal you have completed your task; optionally include a final result string
 
-{
-  "analysis": "<your reasoning and work>",
-  "messages": [
-    { "to": "<agent_id_or_name>", "content": "<message>" }
-  ],
-  "done": false,
-  "result": null
-}
+Your text/prose output is your analysis and reasoning. Actions (messaging, finishing) are done via tool calls.
 
 Rules:
-• "analysis"  — your full reasoning / work output
-• "messages"  — messages to send to other agents; use [] if none
-• "done"       — set true only when you have fully completed your task
-• "result"     — your final conclusion (set when done: true; null otherwise)
+• Call send_message() for each agent you want to contact — you may call it multiple times
+• Call mark_done() when you have fully completed your task
+• Do NOT call mark_done() if you are still waiting for a response from another agent
 • ONLY message agents listed above — use their exact ID. Never invent agent names
+• If tools are unavailable, respond with JSON: {"analysis": "...", "messages": [{"to": "id", "content": "..."}], "done": false, "result": null}
 ${agent.role === 'orchestrator' ? `
 ORCHESTRATOR INSTRUCTIONS — You are the team lead. You must NOT do all the work yourself.
-• On your FIRST turn, decompose the task and send specific assignments to each worker agent via "messages"
-• Set "done": false — you are NOT done until workers have reported back
+• On your FIRST turn, decompose the task and call send_message() for each worker with their assignment
+• Do NOT call mark_done() — you are NOT done until workers have reported back
 • Wait for worker responses before drawing conclusions
 • After receiving worker outputs, send a synthesis request to the synthesizer agent
-• Never set "done": true on your first turn` : ''}
+• Never call mark_done() on your first turn` : ''}
 ${agent.role === 'synthesizer' ? `
-SYNTHESIZER INSTRUCTIONS — Your "result" field is shown directly to a human user.
+SYNTHESIZER INSTRUCTIONS — When you call mark_done(result), the "result" is shown directly to a human user.
 Write it as clear, well-structured Markdown prose — NOT JSON, NOT bullet-point dumps.
 Use headings (##, ###), paragraphs, bold for emphasis, tables, and lists where appropriate.
 Write for a human reader: be COMPREHENSIVE and THOROUGH. Include:
+• ALL specific data from workers — names, numbers, tickers, percentages, dollar amounts, rankings, scores, etc.
 • Full analysis and reasoning, not just conclusions
-• Specific data points, evidence, and sources referenced by team members
 • Actionable recommendations with concrete details
 • Trade-offs, caveats, and areas of uncertainty
 • A structured breakdown — use multiple sections with headings
+CRITICAL: You MUST include every concrete data point the workers provided. If workers listed tickers, include ALL tickers.
+If workers provided numbers, include ALL numbers. Never replace specific data with vague summaries.
+Do NOT say "based on the analysis" or "as discussed" — include the ACTUAL data inline.
 Do NOT summarise briefly — the user wants depth. Aim for a complete, detailed report.
-Never put raw JSON, code fences around the whole result, or agent IDs in the result.
 ` : ''}
 ${agent.role === 'worker' || agent.role === 'custom' ? `
 WORKER INSTRUCTIONS — You can collaborate directly with other workers listed above.
-• If your task overlaps with or depends on another worker's area, message them to share findings, request input, or flag contradictions.
-• If you sent a message to a peer and are waiting for their reply, set "done": false so you stay active for the next round.
-• Only set "done": true when YOUR work is fully complete and you are NOT waiting on any peer response.
+• If your task overlaps with or depends on another worker's area, call send_message() to share findings, request input, or flag contradictions.
+• If you sent a message to a peer and are waiting for their reply, do NOT call mark_done() so you stay active for the next round.
+• Only call mark_done() when YOUR work is fully complete and you are NOT waiting on any peer response.
 • Keep peer exchanges focused — one or two rounds of back-and-forth at most.
-• Do NOT message peers just to be polite — only when it adds concrete value (shared data, dependency, contradiction).` : ''}`
+• Do NOT message peers just to be polite — only when it adds concrete value (shared data, dependency, contradiction).
+CRITICAL OUTPUT RULE: Always produce CONCRETE, SPECIFIC output — real data, names, numbers, lists, calculations.
+Never describe what you "would do" or outline steps. Actually DO the work and report the results.
+Bad: "Set up a scan with criteria and select top tickers"
+Good: "Top 10 by market cap: AAPL ($3.1T, 8.2%), MSFT ($2.9T, 7.8%), ..."` : ''}
+${roundBudget}`
   }
 
   private parseResponse(raw: string): AgentResponse {
@@ -468,16 +700,71 @@ WORKER INSTRUCTIONS — You can collaborate directly with other workers listed a
     return { analysis: raw, messages: [], done: true, result: raw }
   }
 
-  /** Build the full output JSON string — formatting happens at render time in cleanContent.ts. */
-  private formatSynthesizerOutput(parsed: AgentResponse): string {
-    // Pass the full parsed response as JSON — store's cleanOutput will format all fields
-    return JSON.stringify({
-      analysis: parsed.analysis || undefined,
-      messages: parsed.messages.length > 0
-        ? parsed.messages.map((m) => ({ to: this.configs.get(m.to)?.name ?? m.to, content: m.content }))
-        : undefined,
-      result: parsed.result || undefined,
-    })
+  /** Build human-readable output from the synthesizer's parsed response. */
+  private formatSynthesizerOutput(parsed: AgentResponse, synthAgent: AgentConfig): string {
+    const sections: string[] = []
+
+    // Result is the primary output — prefer it over analysis
+    if (parsed.result?.trim()) {
+      sections.push(parsed.result.trim())
+    } else if (parsed.analysis?.trim()) {
+      sections.push(parsed.analysis.trim())
+    }
+
+    // Show inter-agent directives if present
+    if (parsed.messages.length > 0) {
+      const items = parsed.messages
+        .filter((m) => m.to && m.content)
+        .map((m) => {
+          const name = this.configs.get(m.to)?.name ?? m.to
+          return `- **${name}** — ${m.content}`
+        })
+      if (items.length > 0) {
+        sections.push(`### Directives\n\n${items.join('\n')}`)
+      }
+    }
+
+    // Always append worker analyses so the user sees detailed work.
+    // Prefer the actual messages workers sent (these contain the real analysis
+    // with tickers, allocations, etc.) over the generic last-response summary.
+    const workers = this.agents.filter((a) => a.role === 'worker' || a.role === 'custom')
+    const agentNames = new Set(this.agents.map((a) => a.name.toLowerCase()))
+    const workerSections: string[] = []
+    for (const w of workers) {
+      const sent = this.sentContent.get(w.id) ?? []
+      // Use sent messages — they contain the detailed work product
+      if (sent.length > 0) {
+        const unique = [...new Set(sent)]
+          .map((s) => this.stripAgentPrefixes(s, agentNames))
+          .filter((s) => s.length > 20)
+        if (unique.length > 0) {
+          workerSections.push(`### ${w.name}\n\n${unique.join('\n\n')}`)
+          continue
+        }
+      }
+      // Fallback: parse last assistant response
+      const hist = this.histories.get(w.id) ?? []
+      const lastReply = [...hist].reverse().find((m) => m.role === 'assistant')
+      if (!lastReply) continue
+      const workerParsed = this.parseResponse(lastReply.content)
+      const content = workerParsed.result?.trim() || workerParsed.analysis?.trim()
+      if (content && content.length > 20) {
+        workerSections.push(`### ${w.name}\n\n${this.stripAgentPrefixes(content, agentNames)}`)
+      }
+    }
+    if (workerSections.length > 0) {
+      sections.push(`## Detailed Analysis\n\n${workerSections.join('\n\n---\n\n')}`)
+    }
+
+    return sections.join('\n\n---\n\n')
+  }
+
+  /** Strip redundant [Agent Name]: prefixes that models echo back in their output. */
+  private stripAgentPrefixes(text: string, agentNames: Set<string>): string {
+    // Remove leading "[Agent Name]:" or "[From Agent Name]:" prefix
+    return text.replace(/^\[(?:From\s+)?([^\]]+)\]\s*:\s*/i, (match, name) => {
+      return agentNames.has(name.toLowerCase().trim()) ? '' : match
+    }).trim()
   }
 
   /** Convert a non-string result (object/array) into readable prose. */
@@ -503,15 +790,17 @@ WORKER INSTRUCTIONS — You can collaborate directly with other workers listed a
   }
 
   private resolveAgent(nameOrId: string): AgentConfig | undefined {
-    const key = nameOrId.toLowerCase().replace(/[\s_-]+/g, '')
+    // Normalize input: trim whitespace, control chars, quotes models sometimes add
+    const cleaned = nameOrId.trim().replace(/^["']+|["']+$/g, '').trim()
+    const key = cleaned.toLowerCase().replace(/[\s_-]+/g, '')
     const agents = Array.from(this.configs.values())
 
-    // Exact ID match
-    const byId = this.configs.get(nameOrId)
+    // Exact ID match (try both raw and cleaned)
+    const byId = this.configs.get(nameOrId) ?? this.configs.get(cleaned)
     if (byId) return byId
 
-    // Exact name match (case-insensitive)
-    const byName = agents.find((a) => a.name.toLowerCase() === nameOrId.toLowerCase())
+    // Exact name match (case-insensitive, trimmed)
+    const byName = agents.find((a) => a.name.toLowerCase().trim() === cleaned.toLowerCase())
     if (byName) return byName
 
     // Fuzzy: normalized substring match on id or name

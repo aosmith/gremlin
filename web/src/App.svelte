@@ -97,11 +97,81 @@
 {#if store.showAgentEdit !== null}
   <AgentEditModal
     agentId={store.showAgentEdit}
-    onclose={() => { store.showAgentEdit = null; store.clearSession() }}
+    onclose={() => {
+      const wasSuggestion = store.showAgentEdit?.startsWith('__new__:')
+      store.showAgentEdit = null
+      if (!wasSuggestion) store.clearSession()
+    }}
   />
 {/if}
 {#if store.showModeCreate}
   <NewModeModal onclose={() => (store.showModeCreate = false)} />
+{/if}
+
+{#if store.pendingAgentSuggestion && store.showAgentEdit === null}
+  {@const names = store.pendingAgentSuggestion.name.split(', ')}
+  <div class="modal-backdrop" role="dialog" aria-modal="true">
+    <div class="modal suggest-modal">
+      <div class="modal-header">
+        {names.length === 1 ? 'Agent Not Found' : `${names.length} Agents Not Found`}
+      </div>
+      <div class="modal-body">
+        <p>
+          {#if names.length === 1}
+            An agent tried to message <strong>"{names[0]}"</strong>, which doesn't exist.
+          {:else}
+            Agents tried to message these names which don't exist:
+          {/if}
+        </p>
+        {#if names.length > 1}
+          <ul class="suggest-names">
+            {#each names as n}
+              <li><strong>{n}</strong></li>
+            {/each}
+          </ul>
+        {/if}
+        <p class="suggest-hint">Create the first one now, or skip all to continue. Subsequent unknown names this session will be auto-skipped.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="ghost" onclick={() => store.dismissAgentSuggestion()}>Skip All</button>
+        <button class="primary" onclick={() => store.acceptAgentSuggestion()}>Create "{names[0]}"</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if store.pendingRoundsExhausted}
+  {@const exhausted = store.pendingRoundsExhausted}
+  {@const extraRoundsDefault = 5}
+  <div class="modal-backdrop" role="dialog" aria-modal="true">
+    <div class="modal rounds-modal">
+      <div class="modal-header">
+        Round Limit Reached
+        <span class="rounds-badge">{exhausted.currentRound} / {exhausted.maxRounds}</span>
+      </div>
+      <div class="modal-body">
+        <p>Agents have used all {exhausted.maxRounds} rounds but the synthesizer hasn't produced a final result yet.</p>
+        <div class="field">
+          <label for="extra-instruction">Additional instructions <span class="optional">(optional)</span></label>
+          <input
+            id="extra-instruction"
+            type="text"
+            placeholder="e.g. Focus on risk analysis, wrap up…"
+            onkeydown={(e) => {
+              if (e.key === 'Enter') store.continueWithRounds(extraRoundsDefault, (e.target as HTMLInputElement).value)
+            }}
+          />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="ghost" onclick={() => store.synthesizeNow()}>Synthesize Now</button>
+        <button class="primary" onclick={() => {
+          const input = document.getElementById('extra-instruction') as HTMLInputElement
+          store.continueWithRounds(extraRoundsDefault, input?.value ?? '')
+        }}>+ {extraRoundsDefault} Rounds</button>
+      </div>
+    </div>
+  </div>
 {/if}
 
 <!-- ── Results modal ── -->
@@ -1014,5 +1084,55 @@
   }
   .reply-btn {
     flex-shrink: 0;
+  }
+
+  /* ── Agent suggestion modal ──────────────────────────────────────────── */
+  .suggest-modal {
+    max-width: 420px;
+  }
+  .suggest-modal p {
+    margin: 0 0 8px;
+    font-size: 13px;
+    color: var(--color-text-2);
+    line-height: 1.5;
+  }
+  .suggest-hint {
+    font-size: 12px !important;
+    color: var(--color-text-3) !important;
+  }
+  .suggest-names {
+    margin: 4px 0 8px;
+    padding-left: 20px;
+    font-size: 13px;
+    color: var(--color-text-2);
+    line-height: 1.6;
+  }
+
+  /* ── Rounds exhausted modal ────────────────────────────────────────── */
+  .rounds-modal {
+    max-width: 440px;
+  }
+  .rounds-modal p {
+    margin: 0 0 12px;
+    font-size: 13px;
+    color: var(--color-text-2);
+    line-height: 1.5;
+  }
+  .rounds-badge {
+    font-size: 11px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(255,90,90,0.12);
+    color: var(--color-accent-err);
+    margin-left: 8px;
+  }
+  .optional {
+    font-size: 10px;
+    color: var(--color-text-4);
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
   }
 </style>

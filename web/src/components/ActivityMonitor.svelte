@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AgentConfig, Message } from '../lib/types'
   import { cleanContent } from '../lib/cleanContent'
+  import { marked } from 'marked'
   import { tick } from 'svelte'
 
   interface Props {
@@ -68,9 +69,10 @@
         </span>
         <span class="badge {msg.type}">{msg.type}</span>
         {#if cleanContent(msg.content).length > MSG_TRUNCATE && !expanded.has(msg.id)}
-          <div class="content">{cleanContent(msg.content).slice(0, MSG_TRUNCATE)}… <button class="expand-link" onclick={() => { expanded.add(msg.id); expanded = expanded }}>show more</button></div>
+          <div class="content prose-sm">{@html marked.parse(cleanContent(msg.content).slice(0, MSG_TRUNCATE) + '…')}</div>
+          <button class="expand-link" onclick={() => { expanded.add(msg.id); expanded = expanded }}>show more</button>
         {:else}
-          <div class="content">{cleanContent(msg.content)}</div>
+          <div class="content prose-sm">{@html marked.parse(cleanContent(msg.content))}</div>
         {/if}
       </div>
     {/each}
@@ -191,10 +193,37 @@
     color: var(--text);
     font-size: 12.5px;
     line-height: 1.5;
-    white-space: pre-wrap;
     word-break: break-word;
     padding-top: 3px;
   }
+
+  /* Compact markdown styling for monitor messages */
+  .prose-sm :global(p) { margin: 0.3em 0; }
+  .prose-sm :global(h1),
+  .prose-sm :global(h2),
+  .prose-sm :global(h3) { font-size: 1em; font-weight: 700; margin: 0.4em 0 0.2em; }
+  .prose-sm :global(ul), .prose-sm :global(ol) { margin: 0.2em 0; padding-left: 1.4em; }
+  .prose-sm :global(li) { margin: 0.1em 0; }
+  .prose-sm :global(strong) { font-weight: 700; }
+  .prose-sm :global(code) {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    padding: 1px 4px;
+    background: rgba(110,118,129,0.15);
+    border-radius: 3px;
+  }
+  .prose-sm :global(pre) {
+    background: rgba(0,0,0,0.25);
+    border-radius: 4px;
+    padding: 6px 8px;
+    overflow-x: auto;
+    font-size: 11px;
+  }
+  .prose-sm :global(pre code) { background: none; padding: 0; }
+  .prose-sm :global(table) { border-collapse: collapse; margin: 0.3em 0; font-size: 11px; }
+  .prose-sm :global(th), .prose-sm :global(td) { border: 1px solid var(--border); padding: 3px 6px; }
+  .prose-sm :global(th) { background: rgba(255,255,255,0.04); font-weight: 700; }
+  .prose-sm :global(hr) { border: none; border-top: 1px solid var(--border); margin: 0.5em 0; }
 
   .log-section {
     padding: 8px 14px;
