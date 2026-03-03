@@ -5,6 +5,25 @@ import { toAnthropicTools, executeTool } from './tools'
 import { callWebLLM } from './webllm'
 import type { ProgressCallback } from './webllm'
 
+// ── CORS proxy helper ─────────────────────────────────────────────────────────
+
+/**
+ * If a proxyUrl is configured, route the request through the CORS proxy.
+ * The original URL is passed in the X-Target-URL header.
+ * Otherwise, just call fetch directly.
+ */
+function proxiedFetch(url: string, init: RequestInit, settings: Settings): Promise<Response> {
+  if (!settings.proxyUrl) return fetch(url, init)
+
+  const headers = new Headers(init.headers)
+  headers.set('X-Target-URL', url)
+
+  return fetch(settings.proxyUrl.replace(/\/$/, ''), {
+    ...init,
+    headers,
+  })
+}
+
 // ── Simple text call (no tools) ───────────────────────────────────────────────
 
 export async function callLLM(
@@ -139,7 +158,7 @@ function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[], si
     body.tool_choice = 'auto'
   }
 
-  return fetch(settings.apiEndpoint, { method: 'POST', headers, body: JSON.stringify(body), signal })
+  return proxiedFetch(settings.apiEndpoint, { method: 'POST', headers, body: JSON.stringify(body), signal }, settings)
     .then((r) => {
       if (!r.ok) return r.text().then((t) => {
         // Ollama returns a plain error object when the model isn't installed
@@ -230,7 +249,7 @@ function anthropicFetch(
   }
   if (tools?.length) body.tools = toAnthropicTools(tools)
 
-  return fetch(settings.apiEndpoint, {
+  return proxiedFetch(settings.apiEndpoint, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -240,7 +259,7 @@ function anthropicFetch(
     },
     body: JSON.stringify(body),
     signal,
-  }).then((r) => {
+  }, settings).then((r) => {
     if (!r.ok) return r.text().then((t) => { throw new Error(`Anthropic ${r.status}: ${t}`) })
     return r
   })
@@ -323,7 +342,7 @@ async function callGemini(
     parts: [{ text: m.content }],
   }))
 
-  const resp = await fetch(url, {
+  const resp = await proxiedFetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -332,7 +351,7 @@ async function callGemini(
       generationConfig: { maxOutputTokens: 4096 },
     }),
     signal,
-  })
+  }, settings)
   if (!resp.ok) throw new Error(`Gemini ${resp.status}: ${await resp.text()}`)
   const data = await resp.json()
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text

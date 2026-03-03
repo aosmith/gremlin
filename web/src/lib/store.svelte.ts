@@ -27,7 +27,7 @@ function lsDel(key: string) {
   try { localStorage.removeItem(key) } catch { /* ignore */ }
 }
 
-function loadSettings(): Settings  { return ls('gremlin_settings', DEFAULT_SETTINGS) }
+function loadSettings(): Settings  { return { ...DEFAULT_SETTINGS, ...ls('gremlin_settings', DEFAULT_SETTINGS) } }
 function saveSettings(s: Settings) { lsSet('gremlin_settings', s) }
 
 function loadMode(): AppMode  { return ls<AppMode>('gremlin_mode', 'general') }

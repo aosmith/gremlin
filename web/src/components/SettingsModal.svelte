@@ -218,6 +218,11 @@
               <input id="max-rounds" type="number" bind:value={draft.maxRounds} min="1" max="20" />
               <small>Max conversation rounds per session (default 8).</small>
             </div>
+            <div class="field">
+              <label for="proxy-url">CORS Proxy</label>
+              <input id="proxy-url" type="text" bind:value={draft.proxyUrl} placeholder="https://your-proxy.workers.dev" />
+              <small>Optional — only needed if you get CORS errors. Deploy your own with the included Cloudflare Worker.</small>
+            </div>
           </div>
         </details>
       {/if}

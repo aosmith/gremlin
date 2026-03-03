@@ -323,7 +323,14 @@ export class AgentRunner {
         for (const outMsg of parsed.messages) {
           const target = this.resolveAgent(outMsg.to)
           if (!target) {
-            this.cb.onLog(`⚠ ${agent.name} tried to message unknown agent "${outMsg.to}" — skipped`)
+            // No match at all — route to the orchestrator instead of dropping
+            const orchestrator = this.agents.find((a) => a.role === 'orchestrator')
+            if (orchestrator && orchestrator.id !== agent.id) {
+              this.cb.onLog(`↪ ${agent.name} → "${outMsg.to}" not found — rerouted to ${orchestrator.name}`)
+              this.emit({ fromAgent: agent.id, toAgent: orchestrator.id, content: `[intended for "${outMsg.to}"] ${outMsg.content}`, type: 'message', timestamp: Date.now(), round })
+            } else {
+              this.cb.onLog(`⚠ ${agent.name} tried to message unknown agent "${outMsg.to}" — skipped`)
+            }
             continue
           }
           this.emit({ fromAgent: agent.id, toAgent: target.id, content: outMsg.content, type: 'message', timestamp: Date.now(), round })
@@ -514,6 +521,28 @@ WORKER INSTRUCTIONS — You can collaborate directly with other workers listed a
       return normId.includes(key) || key.includes(normId) ||
              normName.includes(key) || key.includes(normName)
     })
-    return bySubstring
+    if (bySubstring) return bySubstring
+
+    // Word-overlap scoring — handles hallucinated names like "social_work" matching "social_worker"
+    const inputWords = new Set(nameOrId.toLowerCase().split(/[\s_-]+/).filter(Boolean))
+    let bestMatch: AgentConfig | undefined
+    let bestScore = 0
+    for (const a of agents) {
+      const idWords = a.id.toLowerCase().split(/[\s_-]+/)
+      const nameWords = a.name.toLowerCase().split(/[\s_-]+/)
+      const candidateWords = new Set([...idWords, ...nameWords])
+      let overlap = 0
+      for (const w of inputWords) {
+        for (const cw of candidateWords) {
+          if (cw.includes(w) || w.includes(cw)) { overlap++; break }
+        }
+      }
+      const score = overlap / Math.max(inputWords.size, 1)
+      if (score > bestScore && score >= 0.5) {
+        bestScore = score
+        bestMatch = a
+      }
+    }
+    return bestMatch
   }
 }

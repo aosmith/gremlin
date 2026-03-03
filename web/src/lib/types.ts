@@ -222,6 +222,7 @@ export interface Settings {
   model: string
   apiFormat: ApiFormat
   maxRounds: number
+  proxyUrl: string
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -230,6 +231,7 @@ export const DEFAULT_SETTINGS: Settings = {
   model: '',
   apiFormat: 'openai',
   maxRounds: 8,
+  proxyUrl: '',
 }
 
 export const AGENT_COLORS = [
