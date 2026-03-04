@@ -38,6 +38,8 @@ export interface RunnerCallbacks {
   onUnknownAgent?: (fromAgent: string, name: string) => Promise<boolean>
   /** Called when round limit is hit. Returns extra rounds + instruction, or null to force-synthesize immediately. */
   onRoundsExhausted?: (currentRound: number, maxRounds: number) => Promise<{ extraRounds: number; instruction: string } | null>
+  /** Called when an agent uses web_search but no provider is configured. Returns true if user set one up. */
+  onSearchNotConfigured?: () => Promise<boolean>
   onDone: () => void
 }
 
@@ -90,7 +92,7 @@ export class AgentRunner {
   }
 
   /** Create a ToolExecutor that captures protocol tool calls into mutable state. */
-  private createExecutor(collected: CollectedState): ToolExecutor {
+  private createExecutor(collected: CollectedState, agentSettings: Settings): ToolExecutor {
     return async (id: string, name: string, args: Record<string, unknown>): Promise<ToolCallRecord> => {
       if (name === 'send_message') {
         const to = String(args.to ?? '')
@@ -105,8 +107,8 @@ export class AgentRunner {
         collected.hadProtocolCalls = true
         return { id, name, args, result: 'Marked as done', isError: false }
       }
-      // Delegate to real tool executor (file ops)
-      return executeTool(id, name, args)
+      // Delegate to real tool executor (file ops + web search)
+      return executeTool(id, name, args, agentSettings, this.cb.onSearchNotConfigured, this.abortController.signal)
     }
   }
 
@@ -284,7 +286,19 @@ export class AgentRunner {
       // If we exited because rounds were exhausted, ask the user what to do
       if (this.round > this.settings.maxRounds && !this.aborted) {
         const synthesizer = agents.find((a) => a.role === 'synthesizer')
-        const synthStatus = synthesizer ? coord.getAgentStatus(synthesizer.id) : null
+        let synthStatus = synthesizer ? coord.getAgentStatus(synthesizer.id) : null
+
+        // The synthesizer may have pending messages queued in the last round
+        // but never got a chance to run because the round limit broke the loop.
+        // Let it run one final turn before deciding whether to show the modal.
+        if (synthesizer && synthStatus !== 'done') {
+          const synthPending = coord.getMessageCountFor(synthesizer.id) > (this.processedCounts.get(synthesizer.id) ?? 0)
+          if (synthPending) {
+            this.cb.onLog('Round limit reached — running final synthesis turn')
+            await this.runAgentTurn(synthesizer, this.round)
+            synthStatus = coord.getAgentStatus(synthesizer.id)
+          }
+        }
 
         if (synthesizer && synthStatus !== 'done') {
           // Ask user: continue with more rounds, or synthesize now?
@@ -454,16 +468,16 @@ export class AgentRunner {
     const history = this.histories.get(agent.id) ?? []
     const systemPrompt = this.buildSystemPrompt(agent)
 
-    // Per-agent model override: merge into a local settings copy if set
-    const agentSettings = agent.model?.trim()
-      ? { ...this.settings, model: agent.model.trim() }
-      : this.settings
+    // Per-agent overrides: merge model and search provider into a local settings copy
+    let agentSettings = this.settings
+    if (agent.model?.trim()) agentSettings = { ...agentSettings, model: agent.model.trim() }
+    if (agent.searchProvider?.trim()) agentSettings = { ...agentSettings, searchProvider: agent.searchProvider.trim() }
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         const signal = this.abortController.signal
         const collected: CollectedState = { messages: [], done: false, result: null, hadProtocolCalls: false }
-        const executor = this.createExecutor(collected)
+        const executor = this.createExecutor(collected, agentSettings)
 
         const response = await callLLMWithTools(
           systemPrompt,
@@ -605,7 +619,10 @@ export class AgentRunner {
       .map((a) => `  • ${a.id} (${a.name}) — ${a.role}`)
       .join('\n')
 
-    const devToolSection = this.tools.length > 0 ? `
+    const hasDevTools = this.tools.some((t) => t.function.name === 'write_file')
+    const hasSearchTools = this.tools.some((t) => t.function.name === 'web_search')
+
+    const devToolSection = hasDevTools ? `
 File system tools also available:
   • write_file(path, content)   — create or overwrite a file (parent dirs auto-created)
   • read_file(path)             — read full file content
@@ -613,11 +630,17 @@ File system tools also available:
 All paths are relative to the project root.
 ` : ''
 
+    const searchToolSection = hasSearchTools ? `
+Web search tool available:
+  • web_search(query) — search the internet for current data
+Use web_search whenever you need real-time information: current prices, recent events, live data, or anything beyond your training cutoff. Prefer searching over guessing.
+` : ''
+
     const remaining = this.settings.maxRounds - this.round
     const roundBudget = `\n\nROUND BUDGET: This is round ${this.round} of ${this.settings.maxRounds}. ${remaining <= 2 ? 'TIME IS ALMOST UP — wrap up and call mark_done() NOW.' : `You have ${remaining} rounds remaining. Be efficient.`}`
 
     return `${agent.systemPrompt}
-${devToolSection}
+${devToolSection}${searchToolSection}
 ---
 You are operating inside GREMLIN, a multi-agent coordination system.
 Your agent ID : ${agent.id}
@@ -728,7 +751,7 @@ ${roundBudget}`
     // Prefer the actual messages workers sent (these contain the real analysis
     // with tickers, allocations, etc.) over the generic last-response summary.
     const workers = this.agents.filter((a) => a.role === 'worker' || a.role === 'custom')
-    const agentNames = new Set(this.agents.map((a) => a.name.toLowerCase()))
+    const agentNames = new Set([...this.agents.map((a) => a.name.toLowerCase()), 'user', 'system'])
     const workerSections: string[] = []
     for (const w of workers) {
       const sent = this.sentContent.get(w.id) ?? []
@@ -761,8 +784,8 @@ ${roundBudget}`
 
   /** Strip redundant [Agent Name]: prefixes that models echo back in their output. */
   private stripAgentPrefixes(text: string, agentNames: Set<string>): string {
-    // Remove leading "[Agent Name]:" or "[From Agent Name]:" prefix
-    return text.replace(/^\[(?:From\s+)?([^\]]+)\]\s*:\s*/i, (match, name) => {
+    // Remove all "[Agent Name]:" or "[From Agent Name]:" prefixes throughout the text
+    return text.replace(/\[(?:From\s+)?([^\]]+)\]\s*:\s*/gi, (match, name) => {
       return agentNames.has(name.toLowerCase().trim()) ? '' : match
     }).trim()
   }

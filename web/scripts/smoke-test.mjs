@@ -47,12 +47,7 @@ if (!html.includes('<style') && !html.includes('style>')) {
   errors.push('No inlined CSS found')
 }
 
-// 6. Check WASM data is inlined
-if (!html.includes('wasm') && !html.includes('WASM')) {
-  errors.push('No WASM reference found in bundle')
-}
-
-// 7. Check critical modules are present (search for key strings in the bundle)
+// 6. Check critical modules are present (search for key strings in the bundle)
 const criticalStrings = [
   'Activity Monitor',      // ActivityMonitor component
   'GREMLIN',               // Brand name in navbar

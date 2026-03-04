@@ -1,9 +1,12 @@
 /**
- * Tool definitions exposed to agents in dev mode.
- * Covers the full CRUD surface for a project directory.
+ * Tool definitions exposed to agents.
+ * Dev tools: file CRUD for engineering mode.
+ * Search tools: web search for all modes.
  */
 
 import { projectFS } from './filesystem'
+import { performWebSearch } from './search'
+import type { Settings } from './types'
 
 // ── OpenAI-format tool definitions ────────────────────────────────────────────
 
@@ -70,6 +73,27 @@ export const DEV_TOOLS: OAITool[] = [
           path: { type: 'string', description: 'Directory path relative to project root' },
         },
         required: ['path'],
+      },
+    },
+  },
+]
+
+// ── Search tools ─────────────────────────────────────────────────────────────
+
+export const SEARCH_TOOLS: OAITool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'web_search',
+      description:
+        'Search the web for current information. Returns relevant results with titles, URLs, and snippets. ' +
+        'Use this when you need real-time data, current prices, recent events, or anything beyond your training cutoff.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The search query' },
+        },
+        required: ['query'],
       },
     },
   },
@@ -148,10 +172,16 @@ export interface ToolCallRecord {
   isError: boolean
 }
 
+/** Callback invoked when an agent calls web_search but no provider is configured. */
+export type OnSearchNotConfigured = () => Promise<boolean>
+
 export async function executeTool(
   id: string,
   name: string,
   args: Record<string, unknown>,
+  settings?: Settings,
+  onSearchNotConfigured?: OnSearchNotConfigured,
+  signal?: AbortSignal,
 ): Promise<ToolCallRecord> {
   try {
     let result = ''
@@ -173,6 +203,21 @@ export async function executeTool(
         result = entries
           .map((e) => `${e.kind === 'directory' ? '📁' : '📄'} ${e.name}`)
           .join('\n') || '(empty)'
+        break
+      }
+      case 'web_search': {
+        const { query } = args as { query: string }
+        if (!settings?.searchProvider) {
+          // Prompt user to configure search
+          if (onSearchNotConfigured) {
+            const configured = await onSearchNotConfigured()
+            if (!configured) throw new Error('Web search not configured — user skipped setup')
+            // settings object is mutated by store when user configures, so retry
+          } else {
+            throw new Error('Web search not configured. Set a search provider in Settings.')
+          }
+        }
+        result = await performWebSearch(query, settings!, signal)
         break
       }
       default:

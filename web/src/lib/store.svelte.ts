@@ -4,7 +4,7 @@ import { DEFAULT_SETTINGS } from './types'
 import { AgentRunner } from './agentRunner'
 import { unloadOllamaModels } from './api'
 import { projectFS } from './filesystem'
-import { DEV_TOOLS } from './tools'
+import { DEV_TOOLS, SEARCH_TOOLS } from './tools'
 import { isWebGPUAvailable, getLoadedModel } from './webllm'
 import type { WebLLMProgress } from './webllm'
 import * as coord from './coordinator'
@@ -36,7 +36,7 @@ function saveMode(m: AppMode) { lsSet('gremlin_mode', m) }
 // ── Builtin preset versioning ────────────────────────────────────────────────
 // Bump this whenever builtin mode agents are updated. On load, any builtin mode
 // whose cached agents are from an older version gets reset to the new preset.
-const BUILTIN_AGENTS_VERSION = 2
+const BUILTIN_AGENTS_VERSION = 5
 const VERSION_KEY = 'gremlin_builtin_agents_version'
 
 function migrateBuiltinAgents() {
@@ -176,7 +176,6 @@ class GremlinStore {
   taskHistory  = $state<string[]>(loadTaskHistory())
 
   isRunning    = $state<boolean>(false)   // never true after a refresh
-  wasmReady    = $state<boolean>(false)
   currentRound = $state<number>(0)
 
   // ── WebLLM ────────────────────────────────────────────────────────────────
@@ -201,6 +200,9 @@ class GremlinStore {
 
   /** Pending suggestion when an agent hallucinates an unknown agent name. */
   pendingAgentSuggestion = $state<{ name: string, resolve: (created: boolean) => void } | null>(null)
+
+  /** Pending prompt when agent calls web_search but no provider is configured. */
+  pendingSearchSetup = $state<{ resolve: (configured: boolean) => void } | null>(null)
 
   /** Pending prompt when round limit is exhausted. */
   pendingRoundsExhausted = $state<{
@@ -343,6 +345,20 @@ class GremlinStore {
     this.pendingAgentSuggestion = null
   }
 
+  /** User configured a search provider from the mid-run modal. */
+  resolveSearchSetup() {
+    if (!this.pendingSearchSetup) return
+    this.pendingSearchSetup.resolve(true)
+    this.pendingSearchSetup = null
+  }
+
+  /** User skipped search setup. */
+  cancelSearchSetup() {
+    if (!this.pendingSearchSetup) return
+    this.pendingSearchSetup.resolve(false)
+    this.pendingSearchSetup = null
+  }
+
   /** User chose to continue with more rounds. */
   continueWithRounds(extraRounds: number, instruction: string) {
     if (!this.pendingRoundsExhausted) return
@@ -475,11 +491,9 @@ class GremlinStore {
       agentStates: this.agentStates,
     })
 
-    // Re-init WASM coordinator so follow-ups / re-runs work
-    if (this.wasmReady) {
-      coord.clearSession()
-      for (const cfg of this.agentConfigs) coord.addAgent(cfg)
-    }
+    // Re-init coordinator so follow-ups / re-runs work
+    coord.clearSession()
+    for (const cfg of this.agentConfigs) coord.addAgent(cfg)
   }
 
   deleteHistoryEntry(id: string) {
@@ -528,7 +542,7 @@ class GremlinStore {
       messageCount: 0,
       unreadCount: 0,
     }))
-    if (this.wasmReady) coord.clearSession()
+    coord.clearSession()
     clearPersistedSession()
   }
 
@@ -563,10 +577,6 @@ class GremlinStore {
 
   async startRun() {
     if (this.isRunning || !this.task.trim()) return
-    if (!this.wasmReady) {
-      this.addLog('⚠ WASM coordinator not ready yet')
-      return
-    }
 
     this.archiveCurrentSession()
     pushTaskHistory(this.task)
@@ -577,7 +587,10 @@ class GremlinStore {
     this.webllmProgress  = null
     this.runner          = new AgentRunner()
 
-    const tools = (this.appMode === 'engineering' && projectFS.isOpen) ? DEV_TOOLS : []
+    const tools = [
+      ...(this.appMode === 'engineering' && projectFS.isOpen ? DEV_TOOLS : []),
+      ...SEARCH_TOOLS,
+    ]
 
     try {
       await this.runner.run(this.task, this.agentConfigs, this.settings, {
@@ -610,6 +623,11 @@ class GremlinStore {
             this.pendingAgentSuggestion = { name, resolve }
           })
         },
+        onSearchNotConfigured: () => {
+          return new Promise<boolean>((resolve) => {
+            this.pendingSearchSetup = { resolve }
+          })
+        },
         onRoundsExhausted: (currentRound, maxRounds) => {
           return new Promise((resolve) => {
             this.pendingRoundsExhausted = { currentRound, maxRounds, resolve }
@@ -622,6 +640,13 @@ class GremlinStore {
           this.isRunning      = false
           this.webllmProgress = null
           this.syncAgentStates()
+          // Reset any agents still stuck in running/waiting to idle
+          for (let i = 0; i < this.agentStates.length; i++) {
+            const s = this.agentStates[i].status
+            if (s === 'running' || s === 'waiting') {
+              this.agentStates[i] = { ...this.agentStates[i], status: 'done' }
+            }
+          }
           this.flushSession()
           this.archiveCurrentSession()
           this.releaseModels()
@@ -670,7 +695,6 @@ class GremlinStore {
   }
 
   private syncAgentStates() {
-    if (!this.wasmReady) return
     const wasmAgents = coord.getAgents()
     for (let i = 0; i < this.agentStates.length; i++) {
       const w = wasmAgents.find((wa) => wa.id === this.agentStates[i].id)

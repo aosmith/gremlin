@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { PROVIDERS } from '../lib/types'
-  import type { Settings, ProviderPreset } from '../lib/types'
+  import { PROVIDERS, SEARCH_PROVIDERS } from '../lib/types'
+  import type { Settings, ProviderPreset, SearchProvider } from '../lib/types'
   import { store } from '../lib/store.svelte'
   import { fetchOllamaModels, fetchOpenAIModels } from '../lib/api'
   import { isWebGPUAvailable, getLoadedModel } from '../lib/webllm'
@@ -66,6 +66,28 @@
 
   const needsKey = $derived(selectedProvider?.requiresKey ?? true)
   const isLocal  = $derived(selectedProvider?.kind === 'local')
+
+  // ── Search provider selection ─────────────────────────────────────────────
+  let searchProviderId = $state(draft.searchProvider || '')
+  const selectedSearch = $derived(SEARCH_PROVIDERS.find((p) => p.id === searchProviderId))
+
+  function pickSearchProvider(p: SearchProvider | null) {
+    if (!p) {
+      searchProviderId = ''
+      draft.searchProvider = ''
+      return
+    }
+    searchProviderId = p.id
+    draft.searchProvider = p.id
+    if (p.endpoint) draft.searchEndpoint = p.endpoint
+  }
+
+  let confirmingClear = $state(false)
+
+  function clearLocalStorage() {
+    localStorage.clear()
+    location.reload()
+  }
 
   function save() {
     store.updateSettings(draft)
@@ -198,6 +220,72 @@
         </div>
       {/if}
 
+      <!-- Search provider -->
+      <div class="section-divider">Web Search (agents)</div>
+      <div class="field">
+        <!-- svelte-ignore a11y_label_has_associated_control -->
+        <label>Search Provider</label>
+        <div class="provider-grid search-grid">
+          <button
+            class="provider-btn"
+            class:active={!searchProviderId}
+            onclick={() => pickSearchProvider(null)}
+            title="Disabled"
+          >
+            <span class="p-icon">—</span>
+            <span class="p-name">None</span>
+          </button>
+          {#each SEARCH_PROVIDERS as p (p.id)}
+            <button
+              class="provider-btn"
+              class:active={searchProviderId === p.id}
+              onclick={() => pickSearchProvider(p)}
+              title={p.description}
+            >
+              <span class="p-icon">{p.icon}</span>
+              <span class="p-name">{p.name}</span>
+            </button>
+          {/each}
+        </div>
+      </div>
+
+      {#if selectedSearch}
+        <div class="provider-desc">{selectedSearch.description}</div>
+      {/if}
+
+      {#if selectedSearch?.requiresKey}
+        <div class="field">
+          <label for="search-key">Search API Key</label>
+          <input
+            id="search-key"
+            type="password"
+            bind:value={draft.searchApiKey}
+            placeholder="Paste your API key…"
+            autocomplete="off"
+          />
+          {#if searchProviderId === 'brave'}
+            <small>Get a free key at <strong>api.search.brave.com</strong></small>
+          {:else if searchProviderId === 'serper'}
+            <small>Get a free key at <strong>serper.dev</strong></small>
+          {:else if searchProviderId === 'tavily'}
+            <small>Get a free key at <strong>tavily.com</strong></small>
+          {/if}
+        </div>
+      {/if}
+
+      {#if selectedSearch?.requiresEndpoint}
+        <div class="field">
+          <label for="search-endpoint">Instance URL</label>
+          <input
+            id="search-endpoint"
+            type="text"
+            bind:value={draft.searchEndpoint}
+            placeholder="https://your-searxng.example.com"
+          />
+          <small>Your self-hosted SearXNG instance URL</small>
+        </div>
+      {/if}
+
       <!-- Endpoint (advanced) — not shown for WebLLM -->
       {#if !isWebLLM}
         <details class="advanced">
@@ -224,6 +312,19 @@
               <label for="proxy-url">CORS Proxy</label>
               <input id="proxy-url" type="text" bind:value={draft.proxyUrl} placeholder="https://your-proxy.workers.dev" />
               <small>Optional — only needed if you get CORS errors. Deploy your own with the included Cloudflare Worker.</small>
+            </div>
+            <div class="field">
+              <!-- svelte-ignore a11y_label_has_associated_control -->
+              <label>Reset</label>
+              {#if confirmingClear}
+                <div class="confirm-row">
+                  <span class="confirm-msg">This will erase all settings, agents, and session history.</span>
+                  <button class="danger" onclick={clearLocalStorage}>Yes, clear everything</button>
+                  <button class="ghost" onclick={() => confirmingClear = false}>Cancel</button>
+                </div>
+              {:else}
+                <button class="ghost danger-text" onclick={() => confirmingClear = true}>Clear local storage…</button>
+              {/if}
             </div>
           </div>
         </details>
@@ -405,4 +506,44 @@
     padding: 1px 5px;
     border-radius: 3px;
   }
+
+  /* ── Clear storage ─────────────────────────────────────────────────────── */
+  /* ── Search provider section ──────────────────────────────────────────── */
+  .section-divider {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-text-3);
+    border-top: 1px solid var(--glass-border);
+    padding-top: 14px;
+    margin-top: 4px;
+  }
+  .search-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .confirm-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .confirm-msg {
+    font-size: 12px;
+    color: var(--color-accent-err, #f85149);
+    width: 100%;
+  }
+  .danger {
+    background: rgba(248,81,73,0.15);
+    border: 1px solid rgba(248,81,73,0.4);
+    color: #f85149;
+    padding: 6px 14px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .danger:hover { background: rgba(248,81,73,0.25); }
+  .danger-text { color: #f85149; }
 </style>

@@ -127,29 +127,52 @@ export function formatOutputAsMarkdown(raw: string): string {
 export function cleanOutputForCopy(raw: string): string {
   if (!raw) return ''
 
+  let text = raw
+
   const obj = tryParseJson(raw)
-  if (!obj) return raw  // Already plain text
-
-  const parts: string[] = []
-
-  if (typeof obj.result === 'string' && obj.result.trim()) {
-    parts.push(obj.result.trim())
-  }
-  if (typeof obj.analysis === 'string' && obj.analysis.trim()) {
-    const result = typeof obj.result === 'string' ? obj.result.trim() : ''
-    if (obj.analysis.trim() !== result) {
-      parts.push(obj.analysis.trim())
+  if (obj) {
+    const parts: string[] = []
+    if (typeof obj.result === 'string' && obj.result.trim()) {
+      parts.push(obj.result.trim())
     }
-  }
-  if (Array.isArray(obj.messages) && obj.messages.length > 0) {
-    for (const m of obj.messages) {
-      if (m.to && m.content) {
-        parts.push(`${prettifyName(String(m.to))}: ${m.content}`)
+    if (typeof obj.analysis === 'string' && obj.analysis.trim()) {
+      const result = typeof obj.result === 'string' ? obj.result.trim() : ''
+      if (obj.analysis.trim() !== result) {
+        parts.push(obj.analysis.trim())
       }
     }
+    if (Array.isArray(obj.messages) && obj.messages.length > 0) {
+      for (const m of obj.messages) {
+        if (m.to && m.content) {
+          parts.push(`${prettifyName(String(m.to))}: ${m.content}`)
+        }
+      }
+    }
+    text = parts.length > 0 ? parts.join('\n\n') : raw
   }
 
-  return parts.length > 0 ? parts.join('\n\n') : raw
+  return stripMarkdown(text)
+}
+
+/** Strip markdown formatting to produce clean plain text. */
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/^#{1,6}\s+/gm, '')            // headers
+    .replace(/\*\*(.+?)\*\*/g, '$1')        // bold
+    .replace(/\*(.+?)\*/g, '$1')            // italic
+    .replace(/__(.+?)__/g, '$1')            // bold (underscores)
+    .replace(/_(.+?)_/g, '$1')              // italic (underscores)
+    .replace(/~~(.+?)~~/g, '$1')            // strikethrough
+    .replace(/`{3}[\s\S]*?`{3}/g, (m) =>   // code blocks — keep content
+      m.replace(/^`{3}\w*\n?/, '').replace(/\n?`{3}$/, ''))
+    .replace(/`(.+?)`/g, '$1')              // inline code
+    .replace(/^\s*[-*+]\s+/gm, '• ')        // unordered lists
+    .replace(/^\s*\d+\.\s+/gm, (m) => m)    // ordered lists (keep as-is)
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // links — keep text
+    .replace(/^>\s?/gm, '')                  // blockquotes
+    .replace(/^---+$/gm, '')                 // horizontal rules
+    .replace(/\n{3,}/g, '\n\n')              // collapse excess newlines
+    .trim()
 }
 
 /** Replace standalone snake_case identifiers with Title Case. */

@@ -70,7 +70,7 @@
         <span class="badge {msg.type}">{msg.type}</span>
         {#if cleanContent(msg.content).length > MSG_TRUNCATE && !expanded.has(msg.id)}
           <div class="content prose-sm">{@html marked.parse(cleanContent(msg.content).slice(0, MSG_TRUNCATE) + '…')}</div>
-          <button class="expand-link" onclick={() => { expanded.add(msg.id); expanded = expanded }}>show more</button>
+          <button class="expand-link" onclick={() => { expanded = new Set([...expanded, msg.id]) }}>show more</button>
         {:else}
           <div class="content prose-sm">{@html marked.parse(cleanContent(msg.content))}</div>
         {/if}

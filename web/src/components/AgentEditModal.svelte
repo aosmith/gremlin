@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { AGENT_COLORS, PROVIDERS } from '../lib/types'
+  import { AGENT_COLORS, PROVIDERS, SEARCH_PROVIDERS } from '../lib/types'
   import type { AgentConfig, AgentRole } from '../lib/types'
   import { store } from '../lib/store.svelte'
 
@@ -36,6 +36,7 @@
           systemPrompt: '',
           color: AGENT_COLORS[Math.floor(Math.random() * AGENT_COLORS.length)],
           model: '',
+          searchProvider: '',
         },
   )
 
@@ -146,6 +147,17 @@
           {/each}
         </datalist>
         <small>Leave blank to use the global model. Type any model name or pick from the list.</small>
+      </div>
+
+      <div class="field">
+        <label for="agent-search">Search Provider <span class="optional">(override)</span></label>
+        <select id="agent-search" bind:value={draft.searchProvider}>
+          <option value="">Global: {store.settings.searchProvider || 'none'}</option>
+          {#each SEARCH_PROVIDERS as p (p.id)}
+            <option value={p.id}>{p.icon} {p.name}</option>
+          {/each}
+        </select>
+        <small>Leave as global to use the provider from Settings.</small>
       </div>
     </div>
 

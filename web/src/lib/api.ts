@@ -12,7 +12,7 @@ import type { ProgressCallback } from './webllm'
  * The original URL is passed in the X-Target-URL header.
  * Otherwise, just call fetch directly.
  */
-function proxiedFetch(url: string, init: RequestInit, settings: Settings): Promise<Response> {
+export function proxiedFetch(url: string, init: RequestInit, settings: Settings): Promise<Response> {
   if (!settings.proxyUrl) return fetch(url, init)
 
   const headers = new Headers(init.headers)

@@ -2,7 +2,8 @@
   import { onMount } from 'svelte'
   import { marked } from 'marked'
   import { store } from './lib/store.svelte'
-  import { initCoordinator } from './lib/coordinator'
+  import { SEARCH_PROVIDERS } from './lib/types'
+  import type { SearchProvider } from './lib/types'
   import AgentCard from './components/AgentCard.svelte'
   import AgentPanel from './components/AgentPanel.svelte'
   import ActivityMonitor from './components/ActivityMonitor.svelte'
@@ -17,15 +18,8 @@
   // Configure marked for safe output
   marked.setOptions({ breaks: true, gfm: true })
 
-  onMount(async () => {
-    try {
-      await initCoordinator()
-      store.wasmReady = true
-      store.initSession()
-    } catch (err) {
-      console.error('WASM init failed:', err)
-      store.logs = ['✖ WASM coordinator failed to load — run: npm run build:wasm']
-    }
+  onMount(() => {
+    store.initSession()
   })
 
   const selectedAgent = $derived(
@@ -140,6 +134,70 @@
   </div>
 {/if}
 
+{#if store.pendingSearchSetup}
+  <div class="modal-backdrop" role="dialog" aria-modal="true">
+    <div class="modal search-setup-modal">
+      <div class="modal-header">
+        Web Search Not Configured
+      </div>
+      <div class="modal-body">
+        <p>An agent wants to search the web but no search provider is set up. Pick one to continue:</p>
+        <div class="search-provider-grid">
+          {#each SEARCH_PROVIDERS as p (p.id)}
+            <button
+              class="search-provider-btn"
+              class:active={store.settings.searchProvider === p.id}
+              onclick={() => {
+                store.updateSettings({ searchProvider: p.id, searchEndpoint: p.endpoint || store.settings.searchEndpoint })
+              }}
+            >
+              <span class="sp-icon">{p.icon}</span>
+              <span class="sp-name">{p.name}</span>
+              <span class="sp-desc">{p.description}</span>
+            </button>
+          {/each}
+        </div>
+        {#if store.settings.searchProvider}
+          {@const sp = SEARCH_PROVIDERS.find((p) => p.id === store.settings.searchProvider)}
+          {#if sp?.requiresKey}
+            <div class="field" style="margin-top:12px">
+              <label for="search-key-modal">API Key</label>
+              <input
+                id="search-key-modal"
+                type="password"
+                value={store.settings.searchApiKey}
+                oninput={(e) => store.updateSettings({ searchApiKey: (e.target as HTMLInputElement).value })}
+                placeholder="Paste your API key…"
+                autocomplete="off"
+              />
+            </div>
+          {/if}
+          {#if sp?.requiresEndpoint}
+            <div class="field" style="margin-top:12px">
+              <label for="search-endpoint-modal">Instance URL</label>
+              <input
+                id="search-endpoint-modal"
+                type="text"
+                value={store.settings.searchEndpoint}
+                oninput={(e) => store.updateSettings({ searchEndpoint: (e.target as HTMLInputElement).value })}
+                placeholder="https://your-searxng.example.com"
+              />
+            </div>
+          {/if}
+        {/if}
+      </div>
+      <div class="modal-footer">
+        <button class="ghost" onclick={() => store.cancelSearchSetup()}>Skip</button>
+        <button
+          class="primary"
+          disabled={!store.settings.searchProvider}
+          onclick={() => store.resolveSearchSetup()}
+        >Save & Search</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 {#if store.pendingRoundsExhausted}
   {@const exhausted = store.pendingRoundsExhausted}
   {@const extraRoundsDefault = 5}
@@ -229,10 +287,6 @@
       <div class="nav-brand">
         <span class="brand-icon">⚡</span>
         <span class="brand-name">GREMLIN</span>
-        <div class="wasm-badge" class:ready={store.wasmReady} title={store.wasmReady ? 'WASM ready' : 'Loading WASM…'}>
-          <span class="dot {store.wasmReady ? 'done' : 'running'}"></span>
-          <span class="wasm-label">WASM</span>
-        </div>
       </div>
 
       <!-- Task input / Live input -->
@@ -312,7 +366,7 @@
           <button
             class="primary run-btn"
             onclick={() => store.startRun()}
-            disabled={!store.wasmReady || !store.task.trim() || !store.settings.model.trim()}
+            disabled={!store.task.trim() || !store.settings.model.trim()}
             title={!store.settings.model.trim() ? 'No model selected — open Settings' : 'Run (Enter)'}
           >▶ Run</button>
         {/if}
@@ -582,24 +636,6 @@
     text-shadow: 0 0 20px rgba(63,185,80,0.4);
     text-transform: uppercase;
   }
-
-  .wasm-badge {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 7px;
-    background: var(--glass);
-    border: 1px solid var(--glass-border);
-    border-radius: 20px;
-    font-size: 10px;
-    font-family: var(--font-mono);
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    opacity: 0.45;
-    transition: opacity var(--t-fast);
-  }
-  .wasm-badge.ready { opacity: 1; }
-  .wasm-label { color: var(--color-text-3); }
 
   .nav-task { flex: 1; min-width: 0; }
   .task-input {
@@ -1087,6 +1123,41 @@
   }
 
   /* ── Agent suggestion modal ──────────────────────────────────────────── */
+  /* ── Search setup modal ─────────────────────────────────────────────── */
+  .search-setup-modal { max-width: 500px; }
+  .search-setup-modal p { margin: 0 0 12px; font-size: 13px; color: var(--color-text-2); line-height: 1.5; }
+  .search-provider-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 7px;
+  }
+  .search-provider-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 10px 6px 8px;
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: all var(--t-fast);
+    text-align: center;
+  }
+  .search-provider-btn:hover {
+    background: var(--glass-light);
+    border-color: var(--glass-light-border);
+    transform: translateY(-1px);
+  }
+  .search-provider-btn.active {
+    background: var(--glass-tinted);
+    border-color: var(--glass-tinted-border);
+    box-shadow: 0 0 0 1px rgba(63,185,80,0.25);
+  }
+  .sp-icon { font-size: 20px; line-height: 1; }
+  .sp-name { font-size: 12px; font-weight: 700; color: var(--color-text); }
+  .sp-desc { font-size: 10px; color: var(--color-text-3); }
+
   .suggest-modal {
     max-width: 420px;
   }
