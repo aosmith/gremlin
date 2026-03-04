@@ -5,6 +5,43 @@ import { toAnthropicTools, executeTool } from './tools'
 import { callWebLLM } from './webllm'
 import type { ProgressCallback } from './webllm'
 
+// ── Multimodal content helpers ───────────────────────────────────────────────
+
+/** Convert LLMMessage to OpenAI-format content (string or content blocks). */
+function toOaiContent(msg: LLMMessage): string | unknown[] {
+  if (!msg.attachments?.length) return msg.content
+  return [
+    { type: 'text', text: msg.content },
+    ...msg.attachments.filter((a) => a.mimeType.startsWith('image/')).map((a) => ({
+      type: 'image_url',
+      image_url: { url: `data:${a.mimeType};base64,${a.base64}` },
+    })),
+  ]
+}
+
+/** Convert LLMMessage to Anthropic-format content (string or content blocks). */
+function toAnthropicContent(msg: LLMMessage): string | unknown[] {
+  if (!msg.attachments?.length) return msg.content
+  return [
+    ...msg.attachments.filter((a) => a.mimeType.startsWith('image/')).map((a) => ({
+      type: 'image',
+      source: { type: 'base64', media_type: a.mimeType, data: a.base64 },
+    })),
+    { type: 'text', text: msg.content },
+  ]
+}
+
+/** Convert LLMMessage to Gemini-format parts array. */
+function toGeminiParts(msg: LLMMessage): unknown[] {
+  if (!msg.attachments?.length) return [{ text: msg.content }]
+  return [
+    ...msg.attachments.filter((a) => a.mimeType.startsWith('image/')).map((a) => ({
+      inline_data: { mime_type: a.mimeType, data: a.base64 },
+    })),
+    { text: msg.content },
+  ]
+}
+
 // ── CORS proxy helper ─────────────────────────────────────────────────────────
 
 /**
@@ -37,7 +74,7 @@ export async function callLLM(
     case 'anthropic': return callAnthropic(systemPrompt, messages, settings, signal)
     case 'gemini':    return callGemini(systemPrompt, messages, settings, signal)
     case 'webllm':    return callWebLLM(
-      [{ role: 'system', content: systemPrompt }, ...messages],
+      [{ role: 'system', content: systemPrompt }, ...messages.map((m) => ({ role: m.role, content: toOaiContent(m) as string }))],
       settings.model,
       4096,
       onProgress,
@@ -85,7 +122,8 @@ async function callOpenAICompat(
   settings: Settings,
   signal?: AbortSignal,
 ): Promise<string> {
-  const resp = await oaiFetch(settings, [{ role: 'system', content: system }, ...messages], undefined, signal)
+  const oaiMsgs = [{ role: 'system', content: system }, ...messages.map((m) => ({ role: m.role, content: toOaiContent(m) }))]
+  const resp = await oaiFetch(settings, oaiMsgs, undefined, signal)
   const data = await resp.json()
   const text = data?.choices?.[0]?.message?.content
   if (typeof text !== 'string') throw new Error(`Unexpected response: ${JSON.stringify(data)}`)
@@ -113,7 +151,7 @@ async function callOpenAIWithTools(
   }
 
   let activeTools: OAITool[] | undefined = tools
-  const msgs: OAIMsg[] = [{ role: 'system', content: system }, ...messages]
+  const msgs: OAIMsg[] = [{ role: 'system', content: system }, ...messages.map((m) => ({ role: m.role, content: toOaiContent(m) } as OAIMsg))]
 
   for (let round = 0; round < 20; round++) {
     let resp: Response
@@ -199,7 +237,8 @@ async function callAnthropic(
   settings: Settings,
   signal?: AbortSignal,
 ): Promise<string> {
-  const resp = await anthropicFetch(settings, system, messages, undefined, signal)
+  const aMsgs = messages.map((m) => ({ role: m.role, content: toAnthropicContent(m) }))
+  const resp = await anthropicFetch(settings, system, aMsgs, undefined, signal)
   const data = await resp.json()
   const text = data?.content?.find((b: { type: string }) => b.type === 'text')?.text
   if (typeof text !== 'string') throw new Error(`Unexpected Anthropic response: ${JSON.stringify(data)}`)
@@ -223,7 +262,7 @@ async function callAnthropicWithTools(
 
   type AMsg = { role: 'user' | 'assistant'; content: string | ABlock[] }
 
-  const msgs: AMsg[] = messages.map((m) => ({ role: m.role, content: m.content }))
+  const msgs: AMsg[] = messages.map((m) => ({ role: m.role, content: toAnthropicContent(m) }))
 
   for (let round = 0; round < 20; round++) {
     const resp = await anthropicFetch(settings, system, msgs, tools, signal)
@@ -312,7 +351,7 @@ async function callWebLLMWithTools(
   }
 
   const eng = await getEngine(settings.model, onProgress)
-  const msgs: OAIMsg[] = [{ role: 'system', content: system }, ...messages]
+  const msgs: OAIMsg[] = [{ role: 'system', content: system }, ...messages.map((m) => ({ role: m.role, content: toOaiContent(m) } as OAIMsg))]
 
   for (let round = 0; round < 20; round++) {
     const resp = await eng.chat.completions.create({
@@ -360,7 +399,7 @@ async function callGemini(
 
   const contents = messages.map((m) => ({
     role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }],
+    parts: toGeminiParts(m),
   }))
 
   const resp = await proxiedFetch(url, {

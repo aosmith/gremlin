@@ -206,9 +206,16 @@ export interface Message {
   round: number
 }
 
+export interface Attachment {
+  mimeType: string   // e.g. 'image/png', 'image/jpeg', 'application/pdf'
+  base64: string     // raw base64 (no data: prefix)
+  name?: string
+}
+
 export interface LLMMessage {
   role: 'user' | 'assistant'
   content: string
+  attachments?: Attachment[]
 }
 
 export interface AgentResponse {

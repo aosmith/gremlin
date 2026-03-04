@@ -71,6 +71,10 @@
     store.injectHumanMessage(orchestrator.id, text)
   }
 
+  // Image attach
+  let fileInput: HTMLInputElement | undefined = $state()
+  let isDraggingFile = $state(false)
+
   // Live input during runs
   let liveInput = $state('')
 
@@ -307,23 +311,74 @@
             >Send</button>
           </div>
         {:else}
-          <input
-            class="task-input"
-            type="text"
-            list="task-history"
-            placeholder="Enter a task for the agent swarm…  (Enter to run)"
-            value={store.task}
-            oninput={(e) => {
-              store.task = (e.target as HTMLInputElement).value
-              store.saveTask()
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="task-input-wrap"
+            class:dragover={isDraggingFile}
+            ondragover={(e) => { e.preventDefault(); isDraggingFile = true }}
+            ondragleave={() => { isDraggingFile = false }}
+            ondrop={async (e) => {
+              e.preventDefault()
+              isDraggingFile = false
+              const files = e.dataTransfer?.files
+              if (files) for (const f of files) await store.addAttachment(f)
             }}
-            onkeydown={(e) => e.key === 'Enter' && store.settings.model.trim() && store.startRun()}
-          />
+          >
+            <input
+              class="task-input"
+              type="text"
+              list="task-history"
+              placeholder="Enter a task for the agent swarm…  (Enter to run)"
+              value={store.task}
+              oninput={(e) => {
+                store.task = (e.target as HTMLInputElement).value
+                store.saveTask()
+              }}
+              onkeydown={(e) => e.key === 'Enter' && store.settings.model.trim() && store.startRun()}
+              onpaste={async (e) => {
+                const items = e.clipboardData?.items
+                if (!items) return
+                for (const item of items) {
+                  if (item.kind === 'file' && item.type.startsWith('image/')) {
+                    const file = item.getAsFile()
+                    if (file) await store.addAttachment(file)
+                  }
+                }
+              }}
+            />
+            <button
+              class="ghost icon btn-attach"
+              onclick={() => fileInput?.click()}
+              title="Attach images (or drag & drop / paste)"
+            >📎</button>
+            <input
+              bind:this={fileInput}
+              type="file"
+              accept="image/*"
+              multiple
+              style="display:none"
+              onchange={async (e) => {
+                const files = (e.target as HTMLInputElement).files
+                if (files) for (const f of files) await store.addAttachment(f)
+                ;(e.target as HTMLInputElement).value = ''
+              }}
+            />
+          </div>
           <datalist id="task-history">
             {#each store.taskHistory as t}
               <option value={t}>{t}</option>
             {/each}
           </datalist>
+          {#if store.attachments.length > 0}
+            <div class="attachment-strip">
+              {#each store.attachments as att, i}
+                <div class="attachment-thumb">
+                  <img src="data:{att.mimeType};base64,{att.base64}" alt={att.name ?? 'attachment'} />
+                  <button class="ghost icon thumb-remove" onclick={() => store.removeAttachment(i)}>✕</button>
+                </div>
+              {/each}
+            </div>
+          {/if}
         {/if}
       </div>
 
@@ -638,6 +693,63 @@
   }
 
   .nav-task { flex: 1; min-width: 0; }
+  .task-input-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    position: relative;
+  }
+  .task-input-wrap.dragover {
+    outline: 2px dashed var(--color-accent);
+    outline-offset: -2px;
+    border-radius: var(--radius);
+  }
+  .task-input-wrap .task-input {
+    flex: 1;
+    padding-right: 36px;
+  }
+  .btn-attach {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 16px;
+    padding: 2px 4px;
+    opacity: 0.5;
+    z-index: 1;
+  }
+  .btn-attach:hover { opacity: 1; }
+  .attachment-strip {
+    display: flex;
+    gap: 6px;
+    padding: 6px 0 0;
+    flex-wrap: wrap;
+  }
+  .attachment-thumb {
+    position: relative;
+    width: 48px;
+    height: 48px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid var(--glass-border);
+    flex-shrink: 0;
+  }
+  .attachment-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .thumb-remove {
+    position: absolute;
+    top: 0;
+    right: 0;
+    font-size: 10px;
+    padding: 0 3px;
+    background: rgba(0,0,0,0.7);
+    color: var(--color-text);
+    border-radius: 0 0 0 4px;
+    line-height: 1.4;
+  }
   .task-input {
     width: 100%;
     background: var(--glass);

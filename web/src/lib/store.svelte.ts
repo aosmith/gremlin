@@ -1,5 +1,5 @@
 import { defaultAgents, agentsForMode, BUILTIN_MODES } from './types'
-import type { AgentConfig, AgentState, AppMode, CustomMode, Message, ModeInfo, Settings } from './types'
+import type { AgentConfig, AgentState, AppMode, Attachment, CustomMode, Message, ModeInfo, Settings } from './types'
 import { DEFAULT_SETTINGS } from './types'
 import { AgentRunner } from './agentRunner'
 import { unloadOllamaModels } from './api'
@@ -197,6 +197,9 @@ class GremlinStore {
   showSettings    = $state<boolean>(false)
   showAgentEdit   = $state<string | null>(null)
   showModeCreate  = $state<boolean>(false)
+
+  // ── Attachments (images, etc.) ──────────────────────────────────────────
+  attachments = $state<Attachment[]>([])
 
   /** Pending suggestion when an agent hallucinates an unknown agent name. */
   pendingAgentSuggestion = $state<{ name: string, resolve: (created: boolean) => void } | null>(null)
@@ -508,7 +511,7 @@ class GremlinStore {
 
   // ── Session ───────────────────────────────────────────────────────────────
 
-  /** Initialize WASM coordinator from restored session state (page load). */
+  /** Initialize coordinator from restored session state (page load). */
   initSession() {
     coord.clearSession()
     for (const cfg of this.agentConfigs) coord.addAgent(cfg)
@@ -536,6 +539,7 @@ class GremlinStore {
     this.currentRound = 0
     this.restoredSessionId = null
     this._archived   = false
+    this.attachments = []
     this.agentStates = this.agentConfigs.map((cfg) => ({
       ...cfg,
       status: 'idle',
@@ -575,6 +579,30 @@ class GremlinStore {
     savePersistedTask(this.task)
   }
 
+  addAttachment(file: File): Promise<void> {
+    const MAX_SIZE = 5 * 1024 * 1024  // 5 MB
+    const MAX_COUNT = 10
+    if (this.attachments.length >= MAX_COUNT) return Promise.resolve()
+    if (file.size > MAX_SIZE) return Promise.resolve()
+    if (!file.type.startsWith('image/')) return Promise.resolve()
+
+    return new Promise((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const dataUrl = reader.result as string
+        const base64 = dataUrl.replace(/^data:[^;]+;base64,/, '')
+        this.attachments = [...this.attachments, { mimeType: file.type, base64, name: file.name }]
+        resolve()
+      }
+      reader.onerror = () => resolve()
+      reader.readAsDataURL(file)
+    })
+  }
+
+  removeAttachment(index: number) {
+    this.attachments = this.attachments.filter((_, i) => i !== index)
+  }
+
   async startRun() {
     if (this.isRunning || !this.task.trim()) return
 
@@ -593,7 +621,7 @@ class GremlinStore {
     ]
 
     try {
-      await this.runner.run(this.task, this.agentConfigs, this.settings, {
+      await this.runner.run(this.task, this.agentConfigs, this.settings, this.attachments, {
         onMessage: (msg) => {
           this.addMessage(msg)
           this.syncAgentStates()
@@ -695,11 +723,11 @@ class GremlinStore {
   }
 
   private syncAgentStates() {
-    const wasmAgents = coord.getAgents()
+    const coordAgents = coord.getAgents()
     for (let i = 0; i < this.agentStates.length; i++) {
-      const w = wasmAgents.find((wa) => wa.id === this.agentStates[i].id)
-      if (w) {
-        this.agentStates[i] = { ...this.agentStates[i], messageCount: w.messageCount, unreadCount: w.unreadCount }
+      const ca = coordAgents.find((a) => a.id === this.agentStates[i].id)
+      if (ca) {
+        this.agentStates[i] = { ...this.agentStates[i], messageCount: ca.messageCount, unreadCount: ca.unreadCount }
       }
     }
   }

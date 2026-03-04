@@ -6,7 +6,7 @@
  *   Round 2+ : Workers execute, can message each other or the synthesizer.
  *   Final   : Synthesizer receives all worker outputs and produces the final answer.
  *
- * All messages are routed through the WASM Coordinator so the UI can monitor everything.
+ * All messages are routed through the Coordinator so the UI can monitor everything.
  * In engineering mode (tools provided) agents can call write_file / read_file / list_directory.
  */
 
@@ -16,7 +16,7 @@ import type { OAITool, ToolExecutor, ToolCallRecord } from './tools'
 import { PROTOCOL_TOOLS, PROTOCOL_TOOL_NAMES, executeTool } from './tools'
 import type { ProgressCallback } from './webllm'
 import * as coord from './coordinator'
-import type { AgentConfig, AgentResponse, AgentStatus, LLMMessage, Message, Settings } from './types'
+import type { AgentConfig, AgentResponse, AgentStatus, Attachment, LLMMessage, Message, Settings } from './types'
 
 /** State collected from protocol tool calls during a single agent turn. */
 interface CollectedState {
@@ -69,6 +69,8 @@ export class AgentRunner {
   private promptedForAgents = false
   /** Outgoing message content per agent — used to build detailed output. */
   private sentContent = new Map<string, string[]>()
+  /** Attachments from the user (images, etc.) — injected into each agent's first turn. */
+  private taskAttachments: Attachment[] = []
 
   abort() {
     this.aborted = true
@@ -116,6 +118,7 @@ export class AgentRunner {
     task: string,
     agents: AgentConfig[],
     settings: Settings,
+    attachments: Attachment[],
     callbacks: RunnerCallbacks,
     tools: OAITool[] = [],
   ): Promise<void> {
@@ -125,6 +128,7 @@ export class AgentRunner {
     this.cb = callbacks
     this.tools = tools
     this.agents = agents
+    this.taskAttachments = attachments
     this.round = 0
     this.configs = new Map(agents.map((a) => [a.id, a]))
     this.histories = new Map(agents.map((a) => [a.id, []]))
@@ -133,7 +137,7 @@ export class AgentRunner {
     this.promptedForAgents = false
     this.sentContent = new Map(agents.map((a) => [a.id, []]))
 
-    // Reset WASM coordinator state and register all agents
+    // Reset coordinator state and register all agents
     coord.clearSession()
     coord.setRunning(true)
     for (const agent of agents) coord.addAgent(agent)
@@ -479,9 +483,15 @@ export class AgentRunner {
         const collected: CollectedState = { messages: [], done: false, result: null, hadProtocolCalls: false }
         const executor = this.createExecutor(collected, agentSettings)
 
+        // Attach task images/files on the agent's first turn
+        const userMsg: LLMMessage = { role: 'user', content: userContent }
+        if (this.taskAttachments.length > 0 && history.length === 0) {
+          userMsg.attachments = this.taskAttachments
+        }
+
         const response = await callLLMWithTools(
           systemPrompt,
-          [...history, { role: 'user', content: userContent }],
+          [...history, userMsg],
           agentSettings,
           this.buildAllTools(),
           agent.id,
@@ -501,7 +511,7 @@ export class AgentRunner {
         )
 
         // Persist conversation history (pruned to last N messages)
-        const updated: LLMMessage[] = [...history, { role: 'user', content: userContent }, { role: 'assistant', content: response }]
+        const updated: LLMMessage[] = [...history, userMsg, { role: 'assistant', content: response }]
         this.histories.set(agent.id, updated.length > MAX_HISTORY_PER_AGENT ? updated.slice(-MAX_HISTORY_PER_AGENT) : updated)
 
         // Prefer tool-collected state; fall back to JSON parsing for Gemini / non-compliant models
