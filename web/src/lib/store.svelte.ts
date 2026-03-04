@@ -36,7 +36,7 @@ function saveMode(m: AppMode) { lsSet('gremlin_mode', m) }
 // ── Builtin preset versioning ────────────────────────────────────────────────
 // Bump this whenever builtin mode agents are updated. On load, any builtin mode
 // whose cached agents are from an older version gets reset to the new preset.
-const BUILTIN_AGENTS_VERSION = 5
+const BUILTIN_AGENTS_VERSION = 6
 const VERSION_KEY = 'gremlin_builtin_agents_version'
 
 function migrateBuiltinAgents() {
