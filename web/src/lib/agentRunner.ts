@@ -641,9 +641,10 @@ All paths are relative to the project root.
 ` : ''
 
     const searchToolSection = hasSearchTools ? `
-Web search tool available:
+Web tools available:
   • web_search(query) — search the internet for current data
-IMPORTANT: You MUST use web_search proactively for any facts, figures, prices, dates, statistics, news, or claims that could be outdated or wrong. Never rely on training knowledge when you can verify with a live search. Call web_search early and often — multiple searches per turn are encouraged. If in doubt, search.
+  • web_fetch(url)    — fetch a web page and return its text content (works for APIs and CORS-enabled sites; if blocked, use web_search instead)
+IMPORTANT: You MUST use web_search proactively for any facts, figures, prices, dates, statistics, news, or claims that could be outdated or wrong. Never rely on training knowledge when you can verify with a live search. Call web_search early and often — multiple searches per turn are encouraged. Use web_fetch to read specific URLs from search results or known data sources. If in doubt, search.
 ` : ''
 
     const remaining = this.settings.maxRounds - this.round

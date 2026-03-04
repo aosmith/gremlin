@@ -6,6 +6,7 @@
 
 import { projectFS } from './filesystem'
 import { performWebSearch } from './search'
+import { proxiedFetch } from './api'
 import type { Settings } from './types'
 
 // ── OpenAI-format tool definitions ────────────────────────────────────────────
@@ -94,6 +95,22 @@ export const SEARCH_TOOLS: OAITool[] = [
           query: { type: 'string', description: 'The search query' },
         },
         required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'web_fetch',
+      description:
+        'Fetch a web page and return its text content. Works for public APIs, JSON endpoints, and sites that allow cross-origin access. ' +
+        'If a page blocks the request, fall back to web_search instead. Use this to read specific URLs from search results or known data sources.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'The full URL to fetch (must start with http:// or https://)' },
+        },
+        required: ['url'],
       },
     },
   },
@@ -220,6 +237,11 @@ export async function executeTool(
         result = await performWebSearch(query, settings!, signal)
         break
       }
+      case 'web_fetch': {
+        const { url } = args as { url: string }
+        result = await fetchWebPage(url, settings, signal)
+        break
+      }
       default:
         throw new Error(`Unknown tool: ${name}`)
     }
@@ -228,4 +250,57 @@ export async function executeTool(
     const result = err instanceof Error ? err.message : String(err)
     return { id, name, args, result, isError: true }
   }
+}
+
+// ── Web fetch helper ──────────────────────────────────────────────────────────
+
+const MAX_FETCH_CHARS = 30_000
+
+/** Strip HTML tags and collapse whitespace to extract readable text. */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+    .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+    .replace(/<header[\s\S]*?<\/header>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\n\s*\n/g, '\n')
+    .trim()
+}
+
+async function fetchWebPage(url: string, settings?: Settings, signal?: AbortSignal): Promise<string> {
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    throw new Error('URL must start with http:// or https://')
+  }
+
+  const fetcher = settings?.proxyUrl ? proxiedFetch : fetch
+  const resp = await fetcher(url, {
+    headers: {
+      'Accept': 'text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+    signal,
+  }, settings!)
+
+  if (!resp.ok) throw new Error(`Fetch failed: HTTP ${resp.status}`)
+
+  const contentType = resp.headers.get('content-type') ?? ''
+  const raw = await resp.text()
+
+  // JSON responses: return as-is (truncated)
+  if (contentType.includes('json')) {
+    return raw.length > MAX_FETCH_CHARS ? raw.slice(0, MAX_FETCH_CHARS) + '\n...(truncated)' : raw
+  }
+
+  // HTML: strip to text
+  const text = htmlToText(raw)
+  return text.length > MAX_FETCH_CHARS ? text.slice(0, MAX_FETCH_CHARS) + '\n...(truncated)' : text
 }
