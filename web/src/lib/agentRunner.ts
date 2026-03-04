@@ -633,7 +633,7 @@ All paths are relative to the project root.
     const searchToolSection = hasSearchTools ? `
 Web search tool available:
   • web_search(query) — search the internet for current data
-Use web_search whenever you need real-time information: current prices, recent events, live data, or anything beyond your training cutoff. Prefer searching over guessing.
+IMPORTANT: You MUST use web_search proactively for any facts, figures, prices, dates, statistics, news, or claims that could be outdated or wrong. Never rely on training knowledge when you can verify with a live search. Call web_search early and often — multiple searches per turn are encouraged. If in doubt, search.
 ` : ''
 
     const remaining = this.settings.maxRounds - this.round
