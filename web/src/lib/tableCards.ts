@@ -79,11 +79,13 @@ function tablesToCards(html: string): string {
  * Detect headings that indicate search results / sourced data and wrap
  * the heading + following content in a callout box.
  * Matches patterns like "Web Search Results", "Sources", "Search Results",
- * "News", "Market Data", "Recent Headlines", etc.
+ * "Market Data", "Recent Headlines", etc.
+ * Uses multi-word patterns to avoid false positives on agent section headings.
  */
 function wrapSearchSections(html: string): string {
   // Match h2/h3 that look like search/source sections, plus all content until the next h2/h3 or end
-  const searchPattern = /(<h[23][^>]*>(?:[^<]*(?:search|source|news|headline|sentiment|market (?:data|overview|update)|recent (?:data|development|report)|web result|social media|breaking)[^<]*)<\/h[23]>)([\s\S]*?)(?=<h[23]|$)/gi
+  // Patterns require compound phrases to avoid matching agent names like "News & Sentiment"
+  const searchPattern = /(<h[23][^>]*>(?:[^<]*(?:search result|web search|web result|source[sd]?\b|news (?:result|headline|summary|roundup|brief|update|flash)|headline[s]?\b|sentiment (?:analysis|overview|summary|score)|market (?:data|overview|update)|recent (?:data|development|report|headline)|social media (?:analysis|sentiment)|breaking news)[^<]*)<\/h[23]>)([\s\S]*?)(?=<h[23]|$)/gi
   return html.replace(searchPattern, (_match, heading: string, body: string) => {
     return `<div class="callout callout-source">${heading}${body}</div>`
   })
@@ -120,48 +122,14 @@ function addSectionSpacing(html: string): string {
   })
 }
 
-/** Common English words that look like tickers but aren't. */
-const TICKER_BLACKLIST = new Set([
-  'A', 'I', 'AM', 'AN', 'AS', 'AT', 'BE', 'BY', 'DO', 'GO', 'IF', 'IN', 'IS', 'IT', 'ME',
-  'MY', 'NO', 'OF', 'OK', 'ON', 'OR', 'OUR', 'SO', 'TO', 'UP', 'US', 'WE',
-  'ALL', 'AND', 'ANY', 'ARE', 'BUT', 'CAN', 'DAY', 'DID', 'END', 'FAR', 'FOR', 'GET',
-  'GOT', 'HAS', 'HAD', 'HER', 'HIS', 'HOW', 'ITS', 'LET', 'MAY', 'NEW', 'NOT', 'NOW',
-  'OLD', 'ONE', 'OUT', 'OWN', 'PUT', 'RUN', 'SAY', 'SET', 'SHE', 'THE', 'TOO', 'TOP',
-  'TRY', 'TWO', 'USE', 'WAY', 'WHO', 'WHY', 'YET', 'YOU',
-  'ALSO', 'BOTH', 'EACH', 'EVEN', 'FROM', 'HAVE', 'HERE', 'HIGH', 'HOLD', 'JUST',
-  'KEEP', 'LAST', 'LIKE', 'LONG', 'LOOK', 'MADE', 'MAKE', 'MORE', 'MOST', 'MUCH',
-  'MUST', 'NEAR', 'NEED', 'NEXT', 'ONLY', 'OVER', 'PAST', 'SAME', 'SELL', 'SHOW',
-  'SOME', 'SUCH', 'TAKE', 'TERM', 'THAN', 'THAT', 'THEM', 'THEN', 'THEY', 'THIS',
-  'VERY', 'WANT', 'WELL', 'WERE', 'WHAT', 'WHEN', 'WILL', 'WITH', 'YEAR', 'YOUR',
-  'ABOUT', 'ABOVE', 'AFTER', 'AVOID', 'BASED', 'BELOW', 'COULD', 'EVERY', 'FIRST',
-  'GIVEN', 'LARGE', 'LOWER', 'NOTED', 'OTHER', 'PRICE', 'RATED', 'RISKS', 'SHALL',
-  'SHARE', 'SINCE', 'SMALL', 'STILL', 'THEIR', 'THERE', 'THESE', 'THOSE', 'THREE',
-  'TOTAL', 'UNDER', 'UNTIL', 'UPPER', 'VALUE', 'WHERE', 'WHICH', 'WHILE', 'WOULD',
-  // Common finance words that aren't tickers
-  'BUY', 'CEO', 'CFO', 'COO', 'CTO', 'DIV', 'EPS', 'ETF', 'FED', 'GDP', 'IPO',
-  'NAV', 'NET', 'P/E', 'PE', 'ROE', 'ROI', 'SEC', 'TAX', 'YTD', 'QOQ', 'MOM', 'YOY',
-  'EBITDA', 'ROIC', 'WACC', 'CAPEX', 'OPEX', 'MOAT', 'BULL', 'BEAR',
-])
-
 /**
- * Highlight stock ticker symbols in rendered HTML.
- * Matches patterns like (AAPL), $AAPL, or standalone tickers next to financial context.
- * Only processes text nodes (not inside HTML tags).
+ * Highlight $TICKER symbols in rendered HTML.
+ * Agents are instructed to always use the $ prefix, so we only match that pattern.
  */
 function highlightTickers(html: string): string {
-  // Process text segments between HTML tags
-  return html.replace(/>([^<]+)</g, (full, text: string) => {
-    const highlighted = text
-      // Pattern 1: Tickers in parentheses — e.g. "(AAPL)" or "(SPY)"
-      .replace(/\(([A-Z]{1,5})\)/g, (_m, t: string) =>
-        TICKER_BLACKLIST.has(t) ? _m : `(<span class="ticker">${t}</span>)`)
-      // Pattern 2: Dollar-prefixed — e.g. "$AAPL"
-      .replace(/\$([A-Z]{1,5})\b/g, (_m, t: string) =>
-        `<span class="ticker">$${t}</span>`)
-      // Pattern 3: Standalone 2-5 letter uppercase words that aren't common English
-      // Only match when preceded by word boundary contexts typical of tickers
-      .replace(/\b([A-Z]{2,5})\b/g, (m, t: string) =>
-        TICKER_BLACKLIST.has(t) ? m : `<span class="ticker">${t}</span>`)
+  return html.replace(/>([^<]+)</g, (_full, text: string) => {
+    const highlighted = text.replace(/\$([A-Z]{1,5})\b/g, (_m, t: string) =>
+      `<span class="ticker">$${t}</span>`)
     return `>${highlighted}<`
   })
 }
@@ -169,11 +137,15 @@ function highlightTickers(html: string): string {
 /**
  * Style [Agent Name]: labels that appear in synthesized output.
  * Matches patterns like [News & Sentiment]:, [Value Analyst]:, [Risk Manager], etc.
+ * Limited to 1-3 word names (max ~30 chars) to avoid matching arbitrary bracketed text.
  */
 function styleAgentLabels(html: string): string {
-  return html.replace(/\[([A-Z][A-Za-z &]+?)\]\s*:?/g, (match, name: string) => {
+  // Match [Agent Name]: — 1-3 words, colon required, & may be HTML-encoded as &amp;
+  return html.replace(/\[([A-Z][A-Za-z]{1,15}(?:[  &;]+[A-Z][A-Za-z]{1,15}){0,2})\]\s*:/g, (match, name: string) => {
     // Skip markdown link syntax — [text](url)
     if (match.endsWith('](')) return match
-    return `<span class="agent-label">${name}</span>`
+    // Decode &amp; back to & for display
+    const display = name.replace(/&amp;/g, '&')
+    return `<span class="agent-label">${display}</span>`
   })
 }

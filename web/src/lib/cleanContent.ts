@@ -55,8 +55,8 @@ function cleanVisualNoise(text: string): string {
  * Compact single-line format.
  */
 export function cleanContent(raw: string): string {
-  // Strip [From AgentName]: prefixes — route info is already shown in the header
-  const stripped = cleanVisualNoise(raw.replace(/\[From\s+[^\]]+\]\s*:\s*/gi, '').trim())
+  // Strip [From/To AgentName]: prefixes — route info is already shown in the header
+  const stripped = cleanVisualNoise(raw.replace(/\[(?:From|To)\s+[^\]]+\]\s*:?\s*/gi, '').trim())
 
   const trimmed = stripped.trim()
   if (!trimmed.startsWith('{')) return stripped
@@ -95,7 +95,8 @@ export function cleanContent(raw: string): string {
 export function formatOutputAsMarkdown(raw: string): string {
   if (!raw) return ''
 
-  const cleaned = cleanVisualNoise(raw)
+  // Strip routing prefixes before processing
+  const cleaned = cleanVisualNoise(raw.replace(/\[(?:From|To)\s+[^\]]+\]\s*:?\s*/gi, ''))
 
   // Try to parse as JSON (legacy format or raw model JSON)
   const obj = tryParseJson(cleaned)
