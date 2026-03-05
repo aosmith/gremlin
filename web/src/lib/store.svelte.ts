@@ -27,12 +27,7 @@ function lsDel(key: string) {
   try { localStorage.removeItem(key) } catch { /* ignore */ }
 }
 
-function loadSettings(): Settings  {
-  const saved = { ...DEFAULT_SETTINGS, ...ls('gremlin_settings', DEFAULT_SETTINGS) }
-  // Backfill proxy URL for users who saved settings before the default was added
-  if (!saved.proxyUrl && DEFAULT_SETTINGS.proxyUrl) saved.proxyUrl = DEFAULT_SETTINGS.proxyUrl
-  return saved
-}
+function loadSettings(): Settings  { return { ...DEFAULT_SETTINGS, ...ls('gremlin_settings', DEFAULT_SETTINGS) } }
 function saveSettings(s: Settings) { lsSet('gremlin_settings', s) }
 
 function loadMode(): AppMode  { return ls<AppMode>('gremlin_mode', 'general') }

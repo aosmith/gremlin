@@ -196,12 +196,11 @@ async function streamAnthropicResponse(
 // ── CORS proxy helper ─────────────────────────────────────────────────────────
 
 /**
- * If a proxyUrl is configured, route the request through the CORS proxy.
- * The original URL is passed in the X-Target-URL header.
- * Otherwise, just call fetch directly.
+ * Route through the CORS proxy only when necessary.
+ * Local targets and domains with native browser CORS support go direct.
  */
 export function proxiedFetch(url: string, init: RequestInit, settings: Settings): Promise<Response> {
-  if (!settings.proxyUrl) return fetch(url, init)
+  if (!settings.proxyUrl || !needsProxy(url)) return fetch(url, init)
 
   const headers = new Headers(init.headers)
   headers.set('X-Target-URL', url)
@@ -210,6 +209,26 @@ export function proxiedFetch(url: string, init: RequestInit, settings: Settings)
     ...init,
     headers,
   })
+}
+
+/** Domains that DON'T need the CORS proxy (they already allow browser requests). */
+const SKIP_PROXY = new Set([
+  'localhost', '127.0.0.1', '::1', '0.0.0.0',
+  'api.openai.com',
+  'api.anthropic.com',
+  'openrouter.ai',
+  'generativelanguage.googleapis.com',
+  'api.together.xyz',
+  'google.serper.dev',
+  'api.tavily.com',
+])
+
+function needsProxy(url: string): boolean {
+  try {
+    return !SKIP_PROXY.has(new URL(url).hostname)
+  } catch {
+    return true
+  }
 }
 
 // ── Simple text call (no tools) ───────────────────────────────────────────────
