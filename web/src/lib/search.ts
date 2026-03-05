@@ -90,27 +90,44 @@ async function searchTavily(query: string, settings: Settings, signal?: AbortSig
   return formatResults(query, results)
 }
 
-// ── DuckDuckGo (Instant Answer API) ──────────────────────────────────────────
+// ── DuckDuckGo (HTML scrape — the JSON API is CORS-blocked in browsers) ──────
 
 async function searchDuckDuckGo(query: string, settings: Settings, signal?: AbortSignal): Promise<string> {
-  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`
-  const resp = await proxiedFetch(url, { method: 'GET', signal }, settings)
+  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
+  const resp = await proxiedFetch(url, {
+    method: 'GET',
+    headers: { 'Accept': 'text/html' },
+    signal,
+  }, settings)
   if (!resp.ok) throw new Error(`DuckDuckGo search failed: ${resp.status}`)
-  const data = await resp.json()
+  const html = await resp.text()
+
+  // Parse results from DuckDuckGo's HTML response
   const results: SearchResult[] = []
-  // Abstract (main answer)
-  if (data.Abstract) {
-    results.push({ title: data.Heading ?? 'Answer', url: data.AbstractURL ?? '', snippet: data.Abstract })
-  }
-  // Related topics
-  for (const topic of (data.RelatedTopics ?? []).slice(0, 7)) {
-    if (topic.Text && topic.FirstURL) {
-      results.push({ title: topic.Text.split(' - ')[0] ?? '', url: topic.FirstURL, snippet: topic.Text })
+  const resultPattern = /<a[^>]+class="result__a"[^>]*href="([^"]*)"[^>]*>(.+?)<\/a>[\s\S]*?<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi
+  let match
+  while ((match = resultPattern.exec(html)) !== null && results.length < 8) {
+    const rawUrl = match[1]
+    const title = match[2].replace(/<[^>]+>/g, '').trim()
+    const snippet = match[3].replace(/<[^>]+>/g, '').trim()
+    // DuckDuckGo wraps URLs in a redirect; extract the actual URL
+    const actualUrl = rawUrl.includes('uddg=')
+      ? decodeURIComponent(rawUrl.split('uddg=')[1]?.split('&')[0] ?? rawUrl)
+      : rawUrl
+    if (title && snippet) {
+      results.push({ title, url: actualUrl, snippet })
     }
   }
-  if (results.length === 0 && data.AbstractText) {
-    results.push({ title: data.Heading ?? query, url: data.AbstractURL ?? '', snippet: data.AbstractText })
+
+  // Fallback: if regex didn't match, try a simpler pattern for result links
+  if (results.length === 0) {
+    const simpleLinkPattern = /<a[^>]+class="result__a"[^>]*>(.+?)<\/a>/gi
+    while ((match = simpleLinkPattern.exec(html)) !== null && results.length < 8) {
+      const title = match[1].replace(/<[^>]+>/g, '').trim()
+      if (title) results.push({ title, url: '', snippet: title })
+    }
   }
+
   return formatResults(query, results)
 }
 

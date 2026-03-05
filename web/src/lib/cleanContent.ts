@@ -39,16 +39,30 @@ function tryParseJson(text: string): Record<string, unknown> | null {
   }
 }
 
+/** Strip visual noise: block chars (████), excessive stars, decorative lines. */
+function cleanVisualNoise(text: string): string {
+  return text
+    .replace(/[█▓▒░]{2,}/g, '')                   // block character bars
+    .replace(/[★☆]{3,}/g, (m) => m.slice(0, 2))   // collapse long star runs to 2
+    .replace(/[─━═]{4,}/g, '---')                  // decorative lines → simple hr
+    .replace(/[🔸🔹🔺🔻◆◇●○■□▪▫]{3,}/g, '')     // excessive decorative symbols
+    .replace(/\n{3,}/g, '\n\n')                    // collapse blank lines
+    .trim()
+}
+
 /**
  * Format agent JSON into readable text for the Activity Monitor / Agent Panel.
  * Compact single-line format.
  */
 export function cleanContent(raw: string): string {
-  const trimmed = raw.trim()
-  if (!trimmed.startsWith('{')) return raw
+  // Strip [From AgentName]: prefixes — route info is already shown in the header
+  const stripped = cleanVisualNoise(raw.replace(/\[From\s+[^\]]+\]\s*:\s*/gi, '').trim())
+
+  const trimmed = stripped.trim()
+  if (!trimmed.startsWith('{')) return stripped
 
   const obj = tryParseJson(trimmed)
-  if (!obj) return raw
+  if (!obj) return stripped
 
   const parts: string[] = []
 
@@ -70,7 +84,7 @@ export function cleanContent(raw: string): string {
     parts.push(`\u2605 Result: ${obj.result.trim()}`)
   }
 
-  return parts.length > 0 ? parts.join('\n') : raw
+  return parts.length > 0 ? parts.join('\n') : stripped
 }
 
 /**
@@ -81,11 +95,13 @@ export function cleanContent(raw: string): string {
 export function formatOutputAsMarkdown(raw: string): string {
   if (!raw) return ''
 
+  const cleaned = cleanVisualNoise(raw)
+
   // Try to parse as JSON (legacy format or raw model JSON)
-  const obj = tryParseJson(raw)
+  const obj = tryParseJson(cleaned)
   if (!obj) {
     // Not JSON — already human-readable, just clean up snake_case names
-    return prettifySnakeCase(raw)
+    return prettifySnakeCase(cleaned)
   }
 
   // If it parsed as JSON, extract human-readable content from protocol fields

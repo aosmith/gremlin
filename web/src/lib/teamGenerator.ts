@@ -67,7 +67,7 @@ export async function generateTeam(
   return parseTeamResponse(raw)
 }
 
-export function parseTeamResponse(raw: string): GeneratedTeam {
+function parseTeamResponse(raw: string): GeneratedTeam {
   // Strip <think>…</think> blocks (reasoning models)
   const noThink = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
   // Strip markdown fences

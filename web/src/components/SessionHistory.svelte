@@ -102,6 +102,7 @@
 
   .history-list {
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 4px;
     display: flex;
     flex-direction: column;

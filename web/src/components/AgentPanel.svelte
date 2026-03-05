@@ -3,6 +3,7 @@
   import type { AgentState, Message } from '../lib/types'
   import { PROVIDERS } from '../lib/types'
   import { cleanContent } from '../lib/cleanContent'
+  import { enhanceProse } from '../lib/tableCards'
   import { marked } from 'marked'
   import { store } from '../lib/store.svelte'
   import { tick } from 'svelte'
@@ -96,7 +97,7 @@
             {/if}
             <span class="msg-time muted mono">{formatTime(msg.timestamp)}</span>
           </div>
-          <div class="msg-content prose-sm">{@html marked.parse(cleanContent(msg.content))}</div>
+          <div class="msg-content prose-sm">{@html enhanceProse(marked.parse(cleanContent(msg.content)) as string)}</div>
         </div>
       {/each}
     </div>
@@ -174,10 +175,11 @@
 
   .panel-body {
     flex: 1;
-    overflow-y: auto;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     gap: 0;
+    min-height: 0;
   }
 
   .section-label {
@@ -198,8 +200,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    min-height: 120px;
-    max-height: 280px;
+    min-height: 0;
   }
 
   .empty-conv {
@@ -265,6 +266,12 @@
   .prose-sm :global(th) { background: rgba(255,255,255,0.04); font-weight: 700; }
   .prose-sm :global(hr) { border: none; border-top: 1px solid var(--border); margin: 0.5em 0; }
 
+  /* Callouts */
+  .prose-sm :global(.callout) { margin: 0.4em 0; padding: 5px 8px; border-radius: 4px; border: 1px solid rgba(48,54,61,0.5); }
+  .prose-sm :global(.callout-source) { background: rgba(88,166,255,0.04); border-left: 2px solid rgba(88,166,255,0.4); }
+  .prose-sm :global(.callout-data) { background: rgba(210,153,34,0.04); border-left: 2px solid rgba(210,153,34,0.35); }
+  .prose-sm :global(.section-break) { margin: 0.5em 0 0.2em; border-top: 1px solid rgba(48,54,61,0.3); }
+
   .human-input-section {
     flex-shrink: 0;
     padding: 0 14px 8px;
@@ -306,6 +313,8 @@
   .agent-info {
     flex-shrink: 0;
     border-top: 1px solid var(--border);
+    max-height: 140px;
+    overflow-y: auto;
   }
 
   .prompt-preview {

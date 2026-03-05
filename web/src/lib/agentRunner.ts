@@ -11,7 +11,7 @@
  */
 
 import { callLLMWithTools } from './api'
-import type { ToolCallEvent } from './api'
+import type { ToolCallEvent, StreamCallback } from './api'
 import type { OAITool, ToolExecutor, ToolCallRecord } from './tools'
 import { PROTOCOL_TOOLS, PROTOCOL_TOOL_NAMES, executeTool } from './tools'
 import type { ProgressCallback } from './webllm'
@@ -34,6 +34,8 @@ export interface RunnerCallbacks {
   onRound?: (round: number) => void
   onToolCall?: (e: ToolCallEvent) => void
   onProgress?: ProgressCallback   // WebLLM model-load progress
+  /** Called with streaming text as the LLM generates it token-by-token. agentId=null signals end. */
+  onStream?: (agentId: string | null, delta: string, accumulated: string) => void
   /** Called when an agent tries to message a hallucinated agent name. Returns true if user created the agent. */
   onUnknownAgent?: (fromAgent: string, name: string) => Promise<boolean>
   /** Called when round limit is hit. Returns extra rounds + instruction, or null to force-synthesize immediately. */
@@ -489,6 +491,11 @@ export class AgentRunner {
           userMsg.attachments = this.taskAttachments
         }
 
+        // Build stream callback that tags with agent ID
+        const streamCb: StreamCallback | undefined = this.cb.onStream
+          ? (delta, accumulated) => this.cb.onStream!(agent.id, delta, accumulated)
+          : undefined
+
         const response = await callLLMWithTools(
           systemPrompt,
           [...history, userMsg],
@@ -508,7 +515,11 @@ export class AgentRunner {
           signal,
           executor,
           this.cb.onProgress,
+          streamCb,
         )
+
+        // Clear streaming state now that the LLM call is complete
+        this.cb.onStream?.(null, '', '')
 
         // Persist conversation history (pruned to last N messages)
         const updated: LLMMessage[] = [...history, userMsg, { role: 'assistant', content: response }]
@@ -598,12 +609,20 @@ export class AgentRunner {
 
         return  // success — exit retry loop
       } catch (err) {
-        if (err instanceof Error && err.name === 'AbortError') return  // user stopped the run
-        if (this.aborted) return
+        if ((err instanceof Error && err.name === 'AbortError') || this.aborted) {
+          // User stopped the run — make sure agent isn't stuck on 'running'
+          if (coord.getAgentStatus(agent.id) === 'running') {
+            coord.updateAgentStatus(agent.id, 'waiting')
+            this.cb.onStatusUpdate(agent.id, 'waiting')
+          }
+          return
+        }
 
         const msg = err instanceof Error ? err.message : String(err)
 
-        if (attempt < MAX_RETRIES) {
+        // Don't retry errors that will just repeat (e.g. tool-call loop exhausted)
+        const noRetry = msg.includes('loop exceeded') || msg.includes('CORS')
+        if (attempt < MAX_RETRIES && !noRetry) {
           const delay = RETRY_BASE_MS * Math.pow(2, attempt)
           this.cb.onLog(`⚠ ${agent.name} failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}): ${msg} — retrying in ${(delay / 1000).toFixed(0)}s`)
           this.cb.onStatusUpdate(agent.id, 'waiting')

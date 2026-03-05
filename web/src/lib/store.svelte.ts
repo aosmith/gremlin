@@ -34,17 +34,35 @@ function loadMode(): AppMode  { return ls<AppMode>('gremlin_mode', 'general') }
 function saveMode(m: AppMode) { lsSet('gremlin_mode', m) }
 
 // ── Builtin preset versioning ────────────────────────────────────────────────
-// Bump this whenever builtin mode agents are updated. On load, any builtin mode
-// whose cached agents are from an older version gets reset to the new preset.
-const BUILTIN_AGENTS_VERSION = 6
+// Bump this whenever builtin mode agents are updated. On load, new agents that
+// don't exist in the user's saved config are merged in — but user edits are preserved.
+const BUILTIN_AGENTS_VERSION = 7
 const VERSION_KEY = 'gremlin_builtin_agents_version'
 
 function migrateBuiltinAgents() {
   const stored = ls(VERSION_KEY, 0)
   if (stored >= BUILTIN_AGENTS_VERSION) return
+
+  // Merge new agents into saved configs instead of wiping user customizations
   for (const mode of BUILTIN_MODES) {
-    lsDel(`gremlin_agents_${mode.id}`)
+    const key = `gremlin_agents_${mode.id}`
+    const saved: AgentConfig[] | null = ls(key, null as any)
+    if (!saved) continue  // no saved config — will use defaults naturally
+
+    const defaults = agentsForMode(mode.id)
+    const savedIds = new Set(saved.map((a) => a.id))
+
+    // Add any new agents from defaults that the user doesn't already have
+    let merged = false
+    for (const defaultAgent of defaults) {
+      if (!savedIds.has(defaultAgent.id)) {
+        saved.push(defaultAgent)
+        merged = true
+      }
+    }
+    if (merged) lsSet(key, saved)
   }
+
   lsSet(VERSION_KEY, BUILTIN_AGENTS_VERSION)
 }
 
@@ -200,6 +218,10 @@ class GremlinStore {
 
   // ── Attachments (images, etc.) ──────────────────────────────────────────
   attachments = $state<Attachment[]>([])
+
+  // ── Streaming ──────────────────────────────────────────────────────────
+  streamingAgentId = $state<string | null>(null)
+  streamingText = $state<string>('')
 
   /** Pending suggestion when an agent hallucinates an unknown agent name. */
   pendingAgentSuggestion = $state<{ name: string, resolve: (created: boolean) => void } | null>(null)
@@ -617,7 +639,7 @@ class GremlinStore {
 
     const tools = [
       ...(this.appMode === 'engineering' && projectFS.isOpen ? DEV_TOOLS : []),
-      ...SEARCH_TOOLS,
+      ...(this.settings.searchProvider ? SEARCH_TOOLS : []),
     ]
 
     try {
@@ -661,12 +683,23 @@ class GremlinStore {
             this.pendingRoundsExhausted = { currentRound, maxRounds, resolve }
           })
         },
+        onStream: (agentId, _delta, accumulated) => {
+          if (agentId === null) {
+            this.streamingAgentId = null
+            this.streamingText = ''
+          } else {
+            this.streamingAgentId = agentId
+            this.streamingText = accumulated
+          }
+        },
         onProgress: (p) => {
           this.webllmProgress = p
         },
         onDone: () => {
           this.isRunning      = false
           this.webllmProgress = null
+          this.streamingAgentId = null
+          this.streamingText    = ''
           this.syncAgentStates()
           // Reset any agents still stuck in running/waiting to idle
           for (let i = 0; i < this.agentStates.length; i++) {
@@ -692,6 +725,8 @@ class GremlinStore {
     this.runner?.abort()
     this.runner = null
     this.isRunning = false
+    this.streamingAgentId = null
+    this.streamingText = ''
     coord.setRunning(false)
     // Reset all non-idle agents to idle
     for (let i = 0; i < this.agentStates.length; i++) {

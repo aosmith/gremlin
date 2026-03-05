@@ -42,6 +42,157 @@ function toGeminiParts(msg: LLMMessage): unknown[] {
   ]
 }
 
+// ── Streaming helpers ─────────────────────────────────────────────────────────
+
+/** Callback for streaming LLM output token-by-token. */
+export type StreamCallback = (delta: string, accumulated: string) => void
+
+/** Parse an SSE (Server-Sent Events) response stream into individual events. */
+async function* parseSSE(response: Response): AsyncGenerator<{ event?: string; data: string }> {
+  const body = response.body
+  if (!body) return
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let currentEvent: string | undefined
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      let newlineIdx: number
+      while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newlineIdx).trimEnd()
+        buffer = buffer.slice(newlineIdx + 1)
+        if (line === '') { currentEvent = undefined; continue }
+        if (line.startsWith('event: ')) {
+          currentEvent = line.slice(7).trim()
+        } else if (line.startsWith('data: ')) {
+          const data = line.slice(6)
+          if (data === '[DONE]') return
+          yield { event: currentEvent, data }
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+// ── OpenAI SSE stream parser ─────────────────────────────────────────────────
+
+interface OAIStreamToolCall {
+  id: string
+  type: 'function'
+  function: { name: string; arguments: string }
+}
+
+async function streamOpenAIResponse(
+  resp: Response,
+  onStream?: StreamCallback,
+): Promise<{ content: string; toolCalls: OAIStreamToolCall[] }> {
+  let content = ''
+  const toolCallMap = new Map<number, { id: string; name: string; args: string }>()
+
+  for await (const { data } of parseSSE(resp)) {
+    let chunk: any
+    try { chunk = JSON.parse(data) } catch { continue }
+
+    const delta = chunk.choices?.[0]?.delta
+    if (!delta) continue
+
+    if (delta.content) {
+      content += delta.content
+      onStream?.(delta.content, content)
+    }
+
+    if (delta.tool_calls) {
+      for (const tc of delta.tool_calls) {
+        const idx = tc.index ?? 0
+        const existing = toolCallMap.get(idx) ?? { id: '', name: '', args: '' }
+        if (tc.id) existing.id = tc.id
+        if (tc.function?.name) existing.name += tc.function.name
+        if (tc.function?.arguments) existing.args += tc.function.arguments
+        toolCallMap.set(idx, existing)
+      }
+    }
+  }
+
+  return {
+    content,
+    toolCalls: [...toolCallMap.values()].map((tc) => ({
+      id: tc.id,
+      type: 'function' as const,
+      function: { name: tc.name, arguments: tc.args },
+    })),
+  }
+}
+
+// ── Anthropic SSE stream parser ──────────────────────────────────────────────
+
+interface AStreamBlock {
+  type: string
+  text?: string
+  id?: string
+  name?: string
+  input?: Record<string, unknown>
+  _rawInput?: string
+}
+
+async function streamAnthropicResponse(
+  resp: Response,
+  onStream?: StreamCallback,
+): Promise<{ content: AStreamBlock[]; stopReason: string | null }> {
+  const blocks: AStreamBlock[] = []
+  let stopReason: string | null = null
+  let textAccumulated = ''
+
+  for await (const { data } of parseSSE(resp)) {
+    let parsed: any
+    try { parsed = JSON.parse(data) } catch { continue }
+
+    switch (parsed.type) {
+      case 'content_block_start': {
+        const block = parsed.content_block
+        if (block.type === 'text') {
+          blocks.push({ type: 'text', text: '' })
+        } else if (block.type === 'tool_use') {
+          blocks.push({ type: 'tool_use', id: block.id, name: block.name, input: {}, _rawInput: '' })
+        }
+        break
+      }
+      case 'content_block_delta': {
+        const delta = parsed.delta
+        const block = blocks[parsed.index]
+        if (delta.type === 'text_delta' && block?.type === 'text') {
+          block.text = (block.text ?? '') + delta.text
+          textAccumulated += delta.text
+          onStream?.(delta.text, textAccumulated)
+        } else if (delta.type === 'input_json_delta' && block?.type === 'tool_use') {
+          block._rawInput = (block._rawInput ?? '') + delta.partial_json
+        }
+        break
+      }
+      case 'message_delta': {
+        if (parsed.delta?.stop_reason) stopReason = parsed.delta.stop_reason
+        break
+      }
+    }
+  }
+
+  // Parse accumulated JSON for tool inputs
+  for (const block of blocks) {
+    if (block.type === 'tool_use' && block._rawInput) {
+      try { block.input = JSON.parse(block._rawInput) } catch { /* leave empty */ }
+      delete block._rawInput
+    }
+  }
+
+  return { content: blocks, stopReason }
+}
+
 // ── CORS proxy helper ─────────────────────────────────────────────────────────
 
 /**
@@ -100,18 +251,19 @@ export async function callLLMWithTools(
   signal?: AbortSignal,
   executor?: ToolExecutor,
   onProgress?: ProgressCallback,
+  onStream?: StreamCallback,
 ): Promise<string> {
   // Gemini has no tool calling support — fall back to text-only
   if (settings.apiFormat === 'gemini') {
     return callGemini(systemPrompt, messages, settings, signal)
   }
   if (settings.apiFormat === 'anthropic') {
-    return callAnthropicWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall, signal, executor)
+    return callAnthropicWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall, signal, executor, onStream)
   }
   if (settings.apiFormat === 'webllm') {
     return callWebLLMWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall, executor, onProgress)
   }
-  return callOpenAIWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall, signal, executor)
+  return callOpenAIWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall, signal, executor, onStream)
 }
 
 // ── OpenAI-compatible ─────────────────────────────────────────────────────────
@@ -139,6 +291,7 @@ async function callOpenAIWithTools(
   onToolCall: (e: ToolCallEvent) => void,
   signal?: AbortSignal,
   executor?: ToolExecutor,
+  onStream?: StreamCallback,
 ): Promise<string> {
   type OAIMsg =
     | { role: 'system' | 'user' | 'assistant'; content: string | null; tool_calls?: OAIToolCall[] }
@@ -153,30 +306,47 @@ async function callOpenAIWithTools(
   let activeTools: OAITool[] | undefined = tools
   const msgs: OAIMsg[] = [{ role: 'system', content: system }, ...messages.map((m) => ({ role: m.role, content: toOaiContent(m) } as OAIMsg))]
 
-  for (let round = 0; round < 20; round++) {
+  // Disable streaming for local Ollama — SSE parsing can hang and local latency is minimal
+  const isLocalOllama = settings.apiEndpoint.includes('localhost:11434') || settings.apiEndpoint.includes('127.0.0.1:11434')
+  for (let round = 0; round < 8; round++) {
     let resp: Response
+    const useStream = !!onStream && !isLocalOllama
     try {
-      resp = await oaiFetch(settings, msgs, activeTools, signal)
+      resp = await oaiFetch(settings, msgs, activeTools, signal, useStream)
     } catch (err) {
       // If the model doesn't support tools, retry without them (text-only fallback)
       if (activeTools?.length && err instanceof Error && err.message.includes('does not support tools')) {
         activeTools = undefined
-        resp = await oaiFetch(settings, msgs, undefined, signal)
+        resp = await oaiFetch(settings, msgs, undefined, signal, useStream)
       } else {
         throw err
       }
     }
-    const data = await resp.json()
-    const choice = data?.choices?.[0]
 
-    if (!choice) throw new Error(`Empty choices: ${JSON.stringify(data)}`)
+    // Parse response — streaming (SSE) or regular JSON
+    let content: string | null = null
+    let toolCalls: OAIToolCall[] = []
 
-    const msg = choice.message as OAIMsg
-    msgs.push(msg)
+    if (useStream) {
+      const result = await streamOpenAIResponse(resp, onStream)
+      content = result.content || null
+      toolCalls = result.toolCalls
+    } else {
+      const data = await resp.json()
+      const choice = data?.choices?.[0]
+      if (!choice) throw new Error(`Empty choices: ${JSON.stringify(data)}`)
+      content = typeof choice.message?.content === 'string' ? choice.message.content : null
+      toolCalls = choice.message?.tool_calls ?? []
+    }
 
-    if (choice.finish_reason === 'tool_calls' && msg.role === 'assistant' && msg.tool_calls?.length) {
+    // Add assistant message to history
+    const assistantMsg: OAIMsg = { role: 'assistant', content }
+    if (toolCalls.length > 0) assistantMsg.tool_calls = toolCalls
+    msgs.push(assistantMsg)
+
+    if (toolCalls.length > 0) {
       // Execute all tool calls in this round
-      for (const tc of msg.tool_calls) {
+      for (const tc of toolCalls) {
         let args: Record<string, unknown> = {}
         try { args = JSON.parse(tc.function.arguments) } catch { /* leave empty */ }
 
@@ -187,14 +357,14 @@ async function callOpenAIWithTools(
         msgs.push({ role: 'tool', tool_call_id: tc.id, content: record.result })
       }
     } else {
-      return typeof msg.content === 'string' ? msg.content : ''
+      return content ?? ''
     }
   }
 
   throw new Error('Tool-call loop exceeded max rounds')
 }
 
-function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[], signal?: AbortSignal) {
+function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[], signal?: AbortSignal, stream = false) {
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (settings.apiKey.trim()) headers['authorization'] = `Bearer ${settings.apiKey}`
   if (settings.apiEndpoint.includes('openrouter')) {
@@ -206,14 +376,11 @@ function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[], si
     model: settings.model,
     max_tokens: 4096,
     messages,
+    stream,
   }
   if (tools?.length) {
     body.tools = tools
     body.tool_choice = 'auto'
-  }
-  // Keep Ollama models loaded during a run (default 5m is too short for multi-agent sessions)
-  if (settings.apiEndpoint.includes('localhost:11434')) {
-    body.keep_alive = '30m'
   }
 
   return proxiedFetch(settings.apiEndpoint, { method: 'POST', headers, body: JSON.stringify(body), signal }, settings)
@@ -254,6 +421,7 @@ async function callAnthropicWithTools(
   onToolCall: (e: ToolCallEvent) => void,
   signal?: AbortSignal,
   executor?: ToolExecutor,
+  onStream?: StreamCallback,
 ): Promise<string> {
   type ABlock =
     | { type: 'text'; text: string }
@@ -264,16 +432,30 @@ async function callAnthropicWithTools(
 
   const msgs: AMsg[] = messages.map((m) => ({ role: m.role, content: toAnthropicContent(m) }))
 
-  for (let round = 0; round < 20; round++) {
-    const resp = await anthropicFetch(settings, system, msgs, tools, signal)
-    const data = await resp.json()
+  for (let round = 0; round < 8; round++) {
+    const useStream = !!onStream
+    const resp = await anthropicFetch(settings, system, msgs, tools, signal, useStream)
 
-    if (data.stop_reason === 'tool_use') {
-      const toolUseBlocks = (data.content as ABlock[]).filter((b) => b.type === 'tool_use') as Array<{
-        type: 'tool_use'; id: string; name: string; input: Record<string, unknown>
-      }>
+    // Parse response — streaming (SSE) or regular JSON
+    let contentBlocks: ABlock[]
+    let stopReason: string | null
 
-      msgs.push({ role: 'assistant', content: data.content })
+    if (useStream) {
+      const result = await streamAnthropicResponse(resp, onStream)
+      contentBlocks = result.content as ABlock[]
+      stopReason = result.stopReason
+    } else {
+      const data = await resp.json()
+      contentBlocks = data.content as ABlock[]
+      stopReason = data.stop_reason
+    }
+
+    const toolUseBlocks = contentBlocks.filter((b) => b.type === 'tool_use') as Array<{
+      type: 'tool_use'; id: string; name: string; input: Record<string, unknown>
+    }>
+
+    if (stopReason === 'tool_use' || toolUseBlocks.length > 0) {
+      msgs.push({ role: 'assistant', content: contentBlocks })
 
       const toolResults: ABlock[] = []
       for (const tu of toolUseBlocks) {
@@ -284,7 +466,7 @@ async function callAnthropicWithTools(
       }
       msgs.push({ role: 'user', content: toolResults })
     } else {
-      const text = (data.content as ABlock[])
+      const text = contentBlocks
         .filter((b) => b.type === 'text')
         .map((b) => (b as { type: 'text'; text: string }).text)
         .join('')
@@ -301,12 +483,14 @@ function anthropicFetch(
   messages: unknown[],
   tools?: OAITool[],
   signal?: AbortSignal,
+  stream = false,
 ) {
   const body: Record<string, unknown> = {
     model: settings.model,
     max_tokens: 4096,
     system,
     messages,
+    stream,
   }
   if (tools?.length) body.tools = toAnthropicTools(tools)
 
@@ -353,7 +537,7 @@ async function callWebLLMWithTools(
   const eng = await getEngine(settings.model, onProgress)
   const msgs: OAIMsg[] = [{ role: 'system', content: system }, ...messages.map((m) => ({ role: m.role, content: toOaiContent(m) } as OAIMsg))]
 
-  for (let round = 0; round < 20; round++) {
+  for (let round = 0; round < 8; round++) {
     const resp = await eng.chat.completions.create({
       messages: msgs as Parameters<typeof eng.chat.completions.create>[0]['messages'],
       max_tokens: 4096,
@@ -437,6 +621,35 @@ export async function unloadOllamaModels(
   if (!settings.apiEndpoint.replace(/\/$/, '').startsWith(OLLAMA_ENDPOINT.replace(/\/v1.*$/, ''))) return null
 
   const base = settings.apiEndpoint.replace(/\/v1.*$/, '')
+
+  // Query what's actually loaded in Ollama and unload those directly
+  // This is more reliable than guessing model names (handles :latest tags, etc.)
+  try {
+    const psResp = await fetch(`${base}/api/ps`, { signal: AbortSignal.timeout(5_000) })
+    if (psResp.ok) {
+      const psData = await psResp.json()
+      const loaded = (psData.models ?? []) as Array<{ name: string }>
+      if (loaded.length > 0) {
+        const errors: string[] = []
+        await Promise.all(loaded.map(async (m) => {
+          try {
+            const resp = await fetch(`${base}/api/generate`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ model: m.name, keep_alive: 0 }),
+              signal: AbortSignal.timeout(10_000),
+            })
+            if (!resp.ok) errors.push(`${m.name}: HTTP ${resp.status}`)
+          } catch (err) {
+            errors.push(`${m.name}: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        }))
+        return errors.length > 0 ? `Failed to unload: ${errors.join('; ')}` : null
+      }
+    }
+  } catch { /* fall through to name-based approach */ }
+
+  // Fallback: unload by configured model names
   const models = new Set<string>()
   if (settings.model) models.add(settings.model)
   for (const a of agents) {

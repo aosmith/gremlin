@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AgentConfig, Message } from '../lib/types'
   import { cleanContent } from '../lib/cleanContent'
+  import { enhanceProse } from '../lib/tableCards'
   import { marked } from 'marked'
   import { tick } from 'svelte'
 
@@ -8,13 +9,15 @@
     messages: Message[]
     agents: AgentConfig[]
     logs: string[]
+    streamingAgentId?: string | null
+    streamingText?: string
   }
-  const { messages, agents, logs }: Props = $props()
+  const { messages, agents, logs, streamingAgentId = null, streamingText = '' }: Props = $props()
 
-  const MSG_TRUNCATE = 2000
+  // Messages always expand fully — no truncation
 
   let scrollEl = $state<HTMLDivElement | undefined>(undefined)
-  let expanded = $state(new Set<string>())
+  let logEl = $state<HTMLDivElement | undefined>(undefined)
 
   const agentMap = $derived(new Map(agents.map((a) => [a.id, a])))
 
@@ -34,12 +37,20 @@
     return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
   }
 
-  // Auto-scroll to bottom when new messages arrive
+  // Auto-scroll to bottom when new messages arrive or streaming text updates
   $effect(() => {
     void messages.length
-    void logs.length
+    void streamingText
     tick().then(() => {
       if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight
+    })
+  })
+
+  // Auto-scroll log section independently
+  $effect(() => {
+    void logs.length
+    tick().then(() => {
+      if (logEl) logEl.scrollTop = logEl.scrollHeight
     })
   })
 </script>
@@ -68,23 +79,32 @@
           <span class="agent-name" style="color: {agentColor(msg.toAgent)}">{agentName(msg.toAgent)}</span>
         </span>
         <span class="badge {msg.type}">{msg.type}</span>
-        {#if cleanContent(msg.content).length > MSG_TRUNCATE && !expanded.has(msg.id)}
-          <div class="content prose-sm">{@html marked.parse(cleanContent(msg.content).slice(0, MSG_TRUNCATE) + '…')}</div>
-          <button class="expand-link" onclick={() => { expanded = new Set([...expanded, msg.id]) }}>show more</button>
-        {:else}
-          <div class="content prose-sm">{@html marked.parse(cleanContent(msg.content))}</div>
-        {/if}
+        <div class="content prose-sm">{@html enhanceProse(marked.parse(cleanContent(msg.content)) as string)}</div>
       </div>
     {/each}
 
-    {#if logs.length > 0}
-      <div class="log-section">
-        {#each logs as log}
-          <div class="log-line mono">{log}</div>
-        {/each}
+    {#if streamingAgentId && streamingText}
+      <div class="event streaming">
+        <span class="route">
+          <span class="agent-name" style="color: {agentColor(streamingAgentId)}">{agentName(streamingAgentId)}</span>
+          <span class="typing-indicator">
+            <span class="typing-dot"></span>
+            <span class="typing-dot"></span>
+            <span class="typing-dot"></span>
+          </span>
+        </span>
+        <span class="typing-label muted">is thinking…</span>
       </div>
     {/if}
   </div>
+
+  {#if logs.length > 0}
+    <div class="log-section" bind:this={logEl}>
+      {#each logs as log}
+        <div class="log-line mono">{log}</div>
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -197,33 +217,150 @@
     padding-top: 3px;
   }
 
-  /* Compact markdown styling for monitor messages */
-  .prose-sm :global(p) { margin: 0.3em 0; }
+  /* Markdown styling for monitor messages */
+  .prose-sm :global(p) { margin: 0.4em 0; }
   .prose-sm :global(h1),
   .prose-sm :global(h2),
-  .prose-sm :global(h3) { font-size: 1em; font-weight: 700; margin: 0.4em 0 0.2em; }
-  .prose-sm :global(ul), .prose-sm :global(ol) { margin: 0.2em 0; padding-left: 1.4em; }
-  .prose-sm :global(li) { margin: 0.1em 0; }
-  .prose-sm :global(strong) { font-weight: 700; }
+  .prose-sm :global(h3) {
+    font-size: 1em;
+    font-weight: 700;
+    margin: 0.8em 0 0.3em;
+    color: var(--accent);
+    border-bottom: 1px solid rgba(63,185,80,0.15);
+    padding-bottom: 2px;
+  }
+  .prose-sm :global(h1) { font-size: 1.05em; }
+  .prose-sm :global(ul), .prose-sm :global(ol) { margin: 0.4em 0; padding-left: 1.5em; }
+  .prose-sm :global(li) { margin: 0.2em 0; }
+  .prose-sm :global(li)::marker { color: var(--text-dim); }
+  .prose-sm :global(strong) { font-weight: 700; color: var(--text); }
+  .prose-sm :global(em) { color: var(--text-muted); }
   .prose-sm :global(code) {
     font-family: var(--font-mono);
-    font-size: 0.9em;
-    padding: 1px 4px;
+    font-size: 0.88em;
+    padding: 1px 5px;
     background: rgba(110,118,129,0.15);
     border-radius: 3px;
   }
   .prose-sm :global(pre) {
-    background: rgba(0,0,0,0.25);
-    border-radius: 4px;
-    padding: 6px 8px;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(48,54,61,0.5);
+    border-radius: 5px;
+    padding: 8px 10px;
     overflow-x: auto;
     font-size: 11px;
+    margin: 0.4em 0;
   }
   .prose-sm :global(pre code) { background: none; padding: 0; }
-  .prose-sm :global(table) { border-collapse: collapse; margin: 0.3em 0; font-size: 11px; }
-  .prose-sm :global(th), .prose-sm :global(td) { border: 1px solid var(--border); padding: 3px 6px; }
-  .prose-sm :global(th) { background: rgba(255,255,255,0.04); font-weight: 700; }
-  .prose-sm :global(hr) { border: none; border-top: 1px solid var(--border); margin: 0.5em 0; }
+  /* Small tables */
+  .prose-sm :global(.table-wrap) {
+    overflow-x: auto;
+    margin: 0.4em 0;
+    border: 1px solid rgba(48,54,61,0.5);
+    border-radius: 4px;
+  }
+  .prose-sm :global(table) {
+    border-collapse: collapse;
+    font-size: 10px;
+    width: 100%;
+    margin: 0;
+  }
+  .prose-sm :global(th), .prose-sm :global(td) {
+    border: 1px solid rgba(48,54,61,0.5);
+    padding: 3px 7px;
+    text-align: left;
+  }
+  .prose-sm :global(th) {
+    background: rgba(63,185,80,0.06);
+    font-weight: 700;
+    color: var(--accent);
+    font-size: 9px;
+    text-transform: uppercase;
+  }
+
+  /* Card grid for wide tables */
+  .prose-sm :global(.card-grid) {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 6px;
+    margin: 0.4em 0;
+  }
+  .prose-sm :global(.data-card) {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(48,54,61,0.5);
+    border-radius: 5px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .prose-sm :global(.card-title) {
+    font-weight: 700;
+    font-size: 12px;
+    color: var(--accent);
+    padding-bottom: 4px;
+    border-bottom: 1px solid rgba(63,185,80,0.12);
+  }
+  .prose-sm :global(.card-fields) {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 3px 8px;
+  }
+  .prose-sm :global(.card-field) {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+  .prose-sm :global(.card-label) {
+    font-size: 8px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+  }
+  .prose-sm :global(.card-value) {
+    font-size: 11px;
+    color: var(--text);
+    line-height: 1.3;
+  }
+  .prose-sm :global(hr) { border: none; border-top: 1px solid var(--border); margin: 0.6em 0; }
+  .prose-sm :global(blockquote) {
+    border-left: 2px solid var(--accent);
+    margin: 0.4em 0;
+    padding: 0.2em 0 0.2em 10px;
+    color: var(--text-muted);
+  }
+
+  /* Callouts in activity monitor */
+  .prose-sm :global(.callout) {
+    margin: 0.5em 0;
+    padding: 6px 10px;
+    border-radius: 5px;
+    border: 1px solid rgba(48,54,61,0.5);
+  }
+  .prose-sm :global(.callout > h2),
+  .prose-sm :global(.callout > h3) {
+    margin-top: 0;
+    font-size: 0.9em;
+  }
+  .prose-sm :global(.callout-source) {
+    background: rgba(88,166,255,0.04);
+    border-color: rgba(88,166,255,0.15);
+    border-left: 2px solid rgba(88,166,255,0.4);
+  }
+  .prose-sm :global(.callout-source > h2),
+  .prose-sm :global(.callout-source > h3) { color: #79c0ff; }
+  .prose-sm :global(.callout-data) {
+    background: rgba(210,153,34,0.04);
+    border-color: rgba(210,153,34,0.15);
+    border-left: 2px solid rgba(210,153,34,0.35);
+  }
+  .prose-sm :global(.section-break) {
+    height: 0;
+    margin: 0.8em 0 0.3em;
+    border-top: 1px solid rgba(48,54,61,0.3);
+  }
 
   .log-section {
     padding: 8px 14px;
@@ -231,19 +368,50 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+    flex-shrink: 0;
+    max-height: 120px;
+    overflow-y: auto;
   }
   .log-line {
     font-size: 11px;
     color: var(--text-dim);
   }
 
-  .expand-link {
-    background: none;
-    border: none;
-    color: var(--accent);
-    cursor: pointer;
-    font-size: inherit;
-    padding: 0;
-    text-decoration: underline;
+  /* ── Typing indicator ──────────────────────────────────────────────── */
+  .event.streaming {
+    border-left: 3px solid var(--accent);
+    padding-left: 11px;
+    background: rgba(63,185,80,0.03);
+    align-items: center;
   }
+
+  .typing-label {
+    font-size: 11px;
+    font-style: italic;
+  }
+
+  .typing-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+
+  .typing-dot {
+    display: inline-block;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: typing-bounce 1.2s ease-in-out infinite;
+  }
+  .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+  @keyframes typing-bounce {
+    0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+    30% { opacity: 1; transform: translateY(-3px); }
+  }
+
 </style>

@@ -247,7 +247,11 @@ export async function executeTool(
     }
     return { id, name, args, result, isError: false }
   } catch (err) {
-    const result = err instanceof Error ? err.message : String(err)
+    let result = err instanceof Error ? err.message : String(err)
+    // CORS / network errors from browser — tell the LLM to stop retrying
+    if (err instanceof TypeError && (result.includes('Failed to fetch') || result.includes('NetworkError'))) {
+      result = `CORS/network error: ${result}. This tool cannot reach the external service from the browser. A CORS proxy is required in Settings, or use a different search provider. Do NOT retry this call — it will fail again.`
+    }
     return { id, name, args, result, isError: true }
   }
 }

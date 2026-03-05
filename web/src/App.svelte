@@ -14,6 +14,7 @@
   import NewModeModal from './components/NewModeModal.svelte'
   import SessionHistory from './components/SessionHistory.svelte'
   import { formatOutputAsMarkdown, cleanOutputForCopy } from './lib/cleanContent'
+  import { enhanceProse } from './lib/tableCards'
 
   // Configure marked for safe output
   marked.setOptions({ breaks: true, gfm: true })
@@ -37,7 +38,10 @@
   // Results modal
   let showResultsModal = $state(!!store.output)
   let resultsDismissed = $state(false)
-  const outputHtml = $derived(store.output ? marked.parse(formatOutputAsMarkdown(store.output)) as string : '')
+  const outputHtml = $derived(store.output
+    ? enhanceProse(marked.parse(formatOutputAsMarkdown(store.output)) as string)
+    : ''
+  )
 
   // Show the results modal only when the run finishes with output (not mid-run)
   $effect(() => {
@@ -574,6 +578,8 @@
         messages={store.messages}
         agents={store.agentConfigs}
         logs={store.logs}
+        streamingAgentId={store.streamingAgentId}
+        streamingText={store.streamingText}
       />
     </div>
 
@@ -1154,23 +1160,141 @@
     border-top: 1px solid var(--glass-border);
     margin: 1.2em 0;
   }
+  /* Small tables (3 or fewer columns) stay as tables */
+  .prose :global(.table-wrap) {
+    overflow-x: auto;
+    margin: 0.8em 0;
+    border: 1px solid var(--glass-border);
+    border-radius: 6px;
+  }
   .prose :global(table) {
     width: 100%;
     border-collapse: collapse;
-    margin: 0.8em 0;
-    font-size: 13px;
+    font-size: 12px;
+    margin: 0;
   }
   .prose :global(th), .prose :global(td) {
-    border: 1px solid var(--glass-border);
-    padding: 6px 10px;
+    border: 1px solid rgba(48,54,61,0.5);
+    padding: 5px 10px;
     text-align: left;
   }
   .prose :global(th) {
-    background: rgba(255,255,255,0.04);
+    background: rgba(63,185,80,0.06);
     font-weight: 700;
-    font-size: 11px;
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
+    color: var(--color-accent);
+  }
+  .prose :global(tr:hover td) {
+    background: rgba(255,255,255,0.02);
+  }
+
+  /* Card grid — wide tables converted to cards */
+  .prose :global(.card-grid) {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 10px;
+    margin: 0.8em 0;
+  }
+  .prose :global(.data-card) {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: border-color var(--t-fast);
+  }
+  .prose :global(.data-card:hover) {
+    border-color: rgba(63,185,80,0.3);
+  }
+  .prose :global(.card-title) {
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--color-accent);
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(63,185,80,0.15);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .prose :global(.card-fields) {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 12px;
+  }
+  .prose :global(.card-field) {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 2px 0;
+  }
+  .prose :global(.card-label) {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-text-4);
+    font-family: var(--font-mono);
+  }
+  .prose :global(.card-value) {
+    font-size: 12px;
+    color: var(--color-text-2);
+    line-height: 1.3;
+  }
+
+  /* ── Callout boxes for search results and data sections ──────────────── */
+  .prose :global(.callout) {
+    margin: 1em 0;
+    padding: 12px 16px;
+    border-radius: 8px;
+    border: 1px solid var(--glass-border);
+  }
+  .prose :global(.callout > h2),
+  .prose :global(.callout > h3) {
+    margin-top: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .prose :global(.callout > h2::before),
+  .prose :global(.callout > h3::before) {
+    font-size: 0.85em;
+    flex-shrink: 0;
+  }
+  .prose :global(.callout-source) {
+    background: rgba(88,166,255,0.04);
+    border-color: rgba(88,166,255,0.2);
+    border-left: 3px solid rgba(88,166,255,0.5);
+  }
+  .prose :global(.callout-source > h2),
+  .prose :global(.callout-source > h3) {
+    color: #79c0ff;
+    font-size: 0.85em;
+  }
+  .prose :global(.callout-source > h2::before),
+  .prose :global(.callout-source > h3::before) {
+    content: '\1F50D'; /* magnifying glass */
+  }
+  .prose :global(.callout-data) {
+    background: rgba(210,153,34,0.04);
+    border-color: rgba(210,153,34,0.2);
+    border-left: 3px solid rgba(210,153,34,0.45);
+  }
+  .prose :global(.callout-data ul) {
+    margin: 0;
+    padding-left: 1.2em;
+  }
+  .prose :global(.callout-data li) {
+    font-size: 13px;
+    line-height: 1.7;
+  }
+  .prose :global(.section-break) {
+    height: 0;
+    margin: 1.5em 0 0.5em;
+    border-top: 1px solid rgba(48,54,61,0.4);
   }
 
   /* ── View Results floating badge ────────────────────────────────────────── */
