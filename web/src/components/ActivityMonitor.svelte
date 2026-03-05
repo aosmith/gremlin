@@ -325,6 +325,28 @@
     line-height: 1.3;
   }
   .prose-sm :global(hr) { border: none; border-top: 1px solid var(--border); margin: 0.6em 0; }
+  .prose-sm :global(.agent-label) {
+    font-family: var(--font-mono);
+    font-size: 0.8em;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--accent);
+    background: rgba(63,185,80,0.08);
+    padding: 1px 5px;
+    border-radius: 2px;
+    border: 1px solid rgba(63,185,80,0.12);
+  }
+  .prose-sm :global(.ticker) {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    color: #79c0ff;
+    background: rgba(88,166,255,0.08);
+    padding: 0 3px;
+    border-radius: 2px;
+    font-size: 0.88em;
+    letter-spacing: 0.02em;
+  }
   .prose-sm :global(blockquote) {
     border-left: 2px solid var(--accent);
     margin: 0.4em 0;

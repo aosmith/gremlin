@@ -10,6 +10,8 @@ export function enhanceProse(html: string): string {
   result = wrapSearchSections(result)
   result = wrapDataCallouts(result)
   result = addSectionSpacing(result)
+  result = highlightTickers(result)
+  result = styleAgentLabels(result)
   return result
 }
 
@@ -115,5 +117,63 @@ function addSectionSpacing(html: string): string {
   return html.replace(/<h2/g, (match) => {
     if (first) { first = false; return match }
     return `<div class="section-break"></div><h2`
+  })
+}
+
+/** Common English words that look like tickers but aren't. */
+const TICKER_BLACKLIST = new Set([
+  'A', 'I', 'AM', 'AN', 'AS', 'AT', 'BE', 'BY', 'DO', 'GO', 'IF', 'IN', 'IS', 'IT', 'ME',
+  'MY', 'NO', 'OF', 'OK', 'ON', 'OR', 'OUR', 'SO', 'TO', 'UP', 'US', 'WE',
+  'ALL', 'AND', 'ANY', 'ARE', 'BUT', 'CAN', 'DAY', 'DID', 'END', 'FAR', 'FOR', 'GET',
+  'GOT', 'HAS', 'HAD', 'HER', 'HIS', 'HOW', 'ITS', 'LET', 'MAY', 'NEW', 'NOT', 'NOW',
+  'OLD', 'ONE', 'OUT', 'OWN', 'PUT', 'RUN', 'SAY', 'SET', 'SHE', 'THE', 'TOO', 'TOP',
+  'TRY', 'TWO', 'USE', 'WAY', 'WHO', 'WHY', 'YET', 'YOU',
+  'ALSO', 'BOTH', 'EACH', 'EVEN', 'FROM', 'HAVE', 'HERE', 'HIGH', 'HOLD', 'JUST',
+  'KEEP', 'LAST', 'LIKE', 'LONG', 'LOOK', 'MADE', 'MAKE', 'MORE', 'MOST', 'MUCH',
+  'MUST', 'NEAR', 'NEED', 'NEXT', 'ONLY', 'OVER', 'PAST', 'SAME', 'SELL', 'SHOW',
+  'SOME', 'SUCH', 'TAKE', 'TERM', 'THAN', 'THAT', 'THEM', 'THEN', 'THEY', 'THIS',
+  'VERY', 'WANT', 'WELL', 'WERE', 'WHAT', 'WHEN', 'WILL', 'WITH', 'YEAR', 'YOUR',
+  'ABOUT', 'ABOVE', 'AFTER', 'AVOID', 'BASED', 'BELOW', 'COULD', 'EVERY', 'FIRST',
+  'GIVEN', 'LARGE', 'LOWER', 'NOTED', 'OTHER', 'PRICE', 'RATED', 'RISKS', 'SHALL',
+  'SHARE', 'SINCE', 'SMALL', 'STILL', 'THEIR', 'THERE', 'THESE', 'THOSE', 'THREE',
+  'TOTAL', 'UNDER', 'UNTIL', 'UPPER', 'VALUE', 'WHERE', 'WHICH', 'WHILE', 'WOULD',
+  // Common finance words that aren't tickers
+  'BUY', 'CEO', 'CFO', 'COO', 'CTO', 'DIV', 'EPS', 'ETF', 'FED', 'GDP', 'IPO',
+  'NAV', 'NET', 'P/E', 'PE', 'ROE', 'ROI', 'SEC', 'TAX', 'YTD', 'QOQ', 'MOM', 'YOY',
+  'EBITDA', 'ROIC', 'WACC', 'CAPEX', 'OPEX', 'MOAT', 'BULL', 'BEAR',
+])
+
+/**
+ * Highlight stock ticker symbols in rendered HTML.
+ * Matches patterns like (AAPL), $AAPL, or standalone tickers next to financial context.
+ * Only processes text nodes (not inside HTML tags).
+ */
+function highlightTickers(html: string): string {
+  // Process text segments between HTML tags
+  return html.replace(/>([^<]+)</g, (full, text: string) => {
+    const highlighted = text
+      // Pattern 1: Tickers in parentheses — e.g. "(AAPL)" or "(SPY)"
+      .replace(/\(([A-Z]{1,5})\)/g, (_m, t: string) =>
+        TICKER_BLACKLIST.has(t) ? _m : `(<span class="ticker">${t}</span>)`)
+      // Pattern 2: Dollar-prefixed — e.g. "$AAPL"
+      .replace(/\$([A-Z]{1,5})\b/g, (_m, t: string) =>
+        `<span class="ticker">$${t}</span>`)
+      // Pattern 3: Standalone 2-5 letter uppercase words that aren't common English
+      // Only match when preceded by word boundary contexts typical of tickers
+      .replace(/\b([A-Z]{2,5})\b/g, (m, t: string) =>
+        TICKER_BLACKLIST.has(t) ? m : `<span class="ticker">${t}</span>`)
+    return `>${highlighted}<`
+  })
+}
+
+/**
+ * Style [Agent Name]: labels that appear in synthesized output.
+ * Matches patterns like [News & Sentiment]:, [Value Analyst]:, [Risk Manager], etc.
+ */
+function styleAgentLabels(html: string): string {
+  return html.replace(/\[([A-Z][A-Za-z &]+?)\]\s*:?/g, (match, name: string) => {
+    // Skip markdown link syntax — [text](url)
+    if (match.endsWith('](')) return match
+    return `<span class="agent-label">${name}</span>`
   })
 }

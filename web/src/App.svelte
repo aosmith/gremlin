@@ -35,6 +35,9 @@
   const showCodeViewer = $derived(isEngineering && store.selectedFile !== null)
   const showAgentPanel = $derived(selectedAgent !== null && !showCodeViewer)
 
+  // History modal
+  let showHistory = $state(false)
+
   // Results modal
   let showResultsModal = $state(!!store.output)
   let resultsDismissed = $state(false)
@@ -66,13 +69,10 @@
   function sendReply() {
     const text = replyText.trim()
     if (!text) return
-    const orchestrator = store.agentConfigs.find((a) => a.role === 'orchestrator')
-    if (!orchestrator) return
     replyText = ''
-    store.output = ''
     showResultsModal = false
     resultsDismissed = false
-    store.injectHumanMessage(orchestrator.id, text)
+    store.followUp(text)
   }
 
   // Image attach
@@ -93,6 +93,9 @@
 </script>
 
 <!-- ── Modals ── -->
+{#if showHistory}
+  <SessionHistory onclose={() => (showHistory = false)} />
+{/if}
 {#if store.showSettings}
   <SettingsModal onclose={() => (store.showSettings = false)} />
 {/if}
@@ -416,6 +419,11 @@
         >↺ Clear</button>
         <button
           class="ghost icon btn-settings"
+          onclick={() => (showHistory = true)}
+          title="Session history"
+        >🕐</button>
+        <button
+          class="ghost icon btn-settings"
           onclick={() => (store.showSettings = true)}
           title="Settings"
         >⚙</button>
@@ -542,8 +550,6 @@
         >↺ Reset agents</button>
       </div>
 
-      <!-- Session history -->
-      <SessionHistory />
 
       <!-- File tree section (engineering mode only) -->
       {#if isEngineering && (store.projectDirName || store.writtenFiles.length > 0)}
@@ -1148,6 +1154,30 @@
     background: none;
     padding: 0;
     font-size: inherit;
+  }
+  .prose :global(.agent-label) {
+    font-family: var(--font-mono);
+    font-size: 0.8em;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-accent);
+    background: rgba(63,185,80,0.08);
+    padding: 2px 7px;
+    border-radius: 3px;
+    border: 1px solid rgba(63,185,80,0.15);
+    white-space: nowrap;
+  }
+  .prose :global(.ticker) {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    color: var(--color-accent-2);
+    background: rgba(88,166,255,0.08);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 0.9em;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
   }
   .prose :global(blockquote) {
     border-left: 3px solid var(--color-accent);

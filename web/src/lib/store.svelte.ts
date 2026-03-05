@@ -701,13 +701,7 @@ class GremlinStore {
           this.streamingAgentId = null
           this.streamingText    = ''
           this.syncAgentStates()
-          // Reset any agents still stuck in running/waiting to idle
-          for (let i = 0; i < this.agentStates.length; i++) {
-            const s = this.agentStates[i].status
-            if (s === 'running' || s === 'waiting') {
-              this.agentStates[i] = { ...this.agentStates[i], status: 'done' }
-            }
-          }
+          this.finalizeAgentStates()
           this.flushSession()
           this.archiveCurrentSession()
           this.releaseModels()
@@ -717,6 +711,7 @@ class GremlinStore {
       const msg = err instanceof Error ? err.message : String(err)
       this.addLog(`✖ Fatal: ${msg}`)
       this.isRunning = false
+      this.finalizeAgentStates()
       this.releaseModels()
     }
   }
@@ -728,12 +723,12 @@ class GremlinStore {
     this.streamingAgentId = null
     this.streamingText = ''
     coord.setRunning(false)
-    // Reset all non-idle agents to idle
-    for (let i = 0; i < this.agentStates.length; i++) {
-      if (this.agentStates[i].status !== 'idle' && this.agentStates[i].status !== 'done') {
-        this.agentStates[i] = { ...this.agentStates[i], status: 'idle' }
-      }
-    }
+    // Reassign full array for reactivity
+    this.agentStates = this.agentStates.map((a) =>
+      a.status !== 'idle' && a.status !== 'done'
+        ? { ...a, status: 'idle' as const }
+        : a
+    )
     this.flushSession()
     this.releaseModels()
   }
@@ -748,6 +743,121 @@ class GremlinStore {
     if (!this.runner) return
     this.isRunning = true
     this.runner.injectHumanMessage(agentId, content)
+  }
+
+  /** Start a follow-up run using the existing messages/context. */
+  async followUp(text: string) {
+    if (this.isRunning || !text.trim()) return
+
+    // Keep existing messages/logs/output but reset agent states for a new run
+    this._archived = false
+    this.output = ''
+
+    // Inject the follow-up as a user message to the orchestrator
+    const orchestrator = this.agentConfigs.find((a) => a.role === 'orchestrator')
+    if (!orchestrator) return
+
+    const msg: Message = {
+      id: `msg_${Date.now()}_followup`,
+      fromAgent: 'user',
+      toAgent: orchestrator.id,
+      content: text,
+      timestamp: Date.now(),
+      type: 'human',
+    }
+    this.addMessage(msg)
+
+    // Update task to reflect follow-up
+    this.task = text
+    savePersistedTask(this.task)
+
+    // Reset agent states
+    for (let i = 0; i < this.agentStates.length; i++) {
+      this.agentStates[i] = { ...this.agentStates[i], status: 'idle' as const }
+    }
+
+    // Start a new run — the runner will see the existing coordinator history
+    this.isRunning       = true
+    this.webllmProgress  = null
+    this.runner          = new AgentRunner()
+
+    const tools = [
+      ...(this.appMode === 'engineering' && projectFS.isOpen ? DEV_TOOLS : []),
+      ...(this.settings.searchProvider ? SEARCH_TOOLS : []),
+    ]
+
+    try {
+      await this.runner.run(this.task, this.agentConfigs, this.settings, this.attachments, {
+        onMessage: (msg) => {
+          this.addMessage(msg)
+          this.syncAgentStates()
+        },
+        onStatusUpdate: (agentId, status) => {
+          this.updateAgentState(agentId, { status })
+        },
+        onRound: (round) => {
+          this.currentRound = round
+        },
+        onLog: (text) => {
+          this.addLog(text)
+        },
+        onOutput: (output) => {
+          this.setOutput(output)
+        },
+        onToolCall: (e) => {
+          if (e.record.name === 'write_file' && !e.record.isError) {
+            const path = e.record.args.path as string
+            if (path && !this.writtenFiles.includes(path)) {
+              this.writtenFiles = [...this.writtenFiles, path].sort()
+            }
+          }
+        },
+        onUnknownAgent: (_fromAgent, name) => {
+          return new Promise<boolean>((resolve) => {
+            this.pendingAgentSuggestion = { name, resolve }
+          })
+        },
+        onSearchNotConfigured: () => {
+          return new Promise<boolean>((resolve) => {
+            this.pendingSearchSetup = { resolve }
+          })
+        },
+        onRoundsExhausted: (currentRound, maxRounds) => {
+          return new Promise((resolve) => {
+            this.pendingRoundsExhausted = { currentRound, maxRounds, resolve }
+          })
+        },
+        onStream: (agentId, _delta, accumulated) => {
+          if (agentId === null) {
+            this.streamingAgentId = null
+            this.streamingText = ''
+          } else {
+            this.streamingAgentId = agentId
+            this.streamingText = accumulated
+          }
+        },
+        onProgress: (p) => {
+          this.webllmProgress = p
+        },
+        onDone: () => {
+          this.isRunning      = false
+          this.webllmProgress = null
+          this.streamingAgentId = null
+          this.streamingText    = ''
+          this.syncAgentStates()
+          this.finalizeAgentStates()
+          this.flushSession()
+          this.archiveCurrentSession()
+          this.releaseModels()
+        },
+      }, tools)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.addLog(`✖ Fatal: ${msg}`)
+      this.isRunning = false
+      this.finalizeAgentStates()
+      this.releaseModels()
+    }
   }
 
   retryAgent(agentId: string) {
@@ -765,6 +875,16 @@ class GremlinStore {
         this.agentStates[i] = { ...this.agentStates[i], messageCount: ca.messageCount, unreadCount: ca.unreadCount }
       }
     }
+  }
+
+  /** Reset all non-done, non-error agents to 'done' when a run finishes. Reassigns the full array for reactivity. */
+  private finalizeAgentStates() {
+    this.agentStates = this.agentStates.map((a) => {
+      if (a.status === 'running' || a.status === 'waiting' || a.status === 'idle') {
+        return { ...a, status: 'done' as const }
+      }
+      return a
+    })
   }
 }
 

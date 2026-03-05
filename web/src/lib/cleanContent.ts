@@ -104,6 +104,10 @@ export function formatOutputAsMarkdown(raw: string): string {
     return prettifySnakeCase(cleaned)
   }
 
+  // Check for structured portfolio format (from finance synthesizer)
+  const portfolio = tryRenderPortfolio(obj)
+  if (portfolio) return portfolio
+
   // If it parsed as JSON, extract human-readable content from protocol fields
   const sections: string[] = []
 
@@ -134,6 +138,115 @@ export function formatOutputAsMarkdown(raw: string): string {
   }
 
   return sections.length > 0 ? sections.join('\n\n---\n\n') : prettifySnakeCase(raw)
+}
+
+// ── Portfolio JSON renderer ──────────────────────────────────────────────────
+
+interface PortfolioPosition {
+  ticker: string
+  company: string
+  weight: number
+  conviction: string
+  price?: string
+  fairValue?: string
+  upside?: string
+  catalyst: string
+  risk: string
+  thesis?: string
+}
+
+interface PortfolioData {
+  positions: PortfolioPosition[]
+  summary?: string
+  risks?: string[]
+  sectors?: Record<string, number>
+  watchlist?: string[]
+}
+
+/**
+ * Detect and render structured portfolio JSON.
+ * Returns markdown string if the object matches the portfolio schema, null otherwise.
+ */
+function tryRenderPortfolio(obj: Record<string, unknown>): string | null {
+  // Check for portfolio schema — either at top level or nested in result
+  let data: PortfolioData | null = null
+
+  if (Array.isArray(obj.positions) && obj.positions.length > 0) {
+    data = obj as unknown as PortfolioData
+  } else if (typeof obj.result === 'string') {
+    const inner = tryParseJson(obj.result)
+    if (inner && Array.isArray(inner.positions) && inner.positions.length > 0) {
+      data = inner as unknown as PortfolioData
+    }
+  }
+
+  if (!data) return null
+  return renderPortfolioMarkdown(data)
+}
+
+function renderPortfolioMarkdown(data: PortfolioData): string {
+  const sections: string[] = []
+
+  // Summary
+  if (data.summary) {
+    sections.push(data.summary)
+  }
+
+  // Portfolio table (will become cards via enhanceProse since it has 5+ columns)
+  const positions = data.positions
+  const hasPrice = positions.some((p) => p.price)
+  const hasFV = positions.some((p) => p.fairValue)
+  const hasUpside = positions.some((p) => p.upside)
+
+  let header = '| Ticker | Company | Weight | Conviction'
+  let sep = '|---|---|---|---'
+  if (hasPrice) { header += ' | Price'; sep += '|---' }
+  if (hasFV) { header += ' | Fair Value'; sep += '|---' }
+  if (hasUpside) { header += ' | Upside'; sep += '|---' }
+  header += ' | Catalyst | Risk |'
+  sep += '|---|---|'
+
+  const rows = positions.map((p) => {
+    let row = `| ${p.ticker} | ${p.company} | ${p.weight}% | ${p.conviction}`
+    if (hasPrice) row += ` | ${p.price ?? '-'}`
+    if (hasFV) row += ` | ${p.fairValue ?? '-'}`
+    if (hasUpside) row += ` | ${p.upside ?? '-'}`
+    row += ` | ${p.catalyst} | ${p.risk} |`
+    return row
+  })
+
+  sections.push(`## Portfolio\n\n${header}\n${sep}\n${rows.join('\n')}`)
+
+  // Per-position theses
+  const theses = positions.filter((p) => p.thesis && p.thesis.trim().length > 20)
+  if (theses.length > 0) {
+    const thesisSections = theses.map((p) =>
+      `### ${p.ticker} — ${p.company}\n\n${p.thesis}`
+    ).join('\n\n')
+    sections.push(`## Investment Theses\n\n${thesisSections}`)
+  }
+
+  // Sector allocation
+  if (data.sectors && Object.keys(data.sectors).length > 0) {
+    const sectorLines = Object.entries(data.sectors)
+      .sort(([, a], [, b]) => b - a)
+      .map(([sector, weight]) => `- **${sector}**: ${weight}%`)
+    sections.push(`## Sector Allocation\n\n${sectorLines.join('\n')}`)
+  }
+
+  // Portfolio risks
+  if (data.risks && data.risks.length > 0) {
+    const riskLines = data.risks.map((r) => `- ${r}`)
+    sections.push(`## Portfolio Risks\n\n${riskLines.join('\n')}`)
+  }
+
+  // Watchlist
+  if (data.watchlist && data.watchlist.length > 0) {
+    const watchLines = data.watchlist.map((w) => `- ${w}`)
+    sections.push(`## Watchlist & Exits\n\n${watchLines.join('\n')}`)
+  }
+
+  return sections.join('\n\n---\n\n')
 }
 
 /**

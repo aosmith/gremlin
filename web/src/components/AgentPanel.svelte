@@ -265,6 +265,8 @@
   .prose-sm :global(th), .prose-sm :global(td) { border: 1px solid var(--border); padding: 3px 6px; }
   .prose-sm :global(th) { background: rgba(255,255,255,0.04); font-weight: 700; }
   .prose-sm :global(hr) { border: none; border-top: 1px solid var(--border); margin: 0.5em 0; }
+  .prose-sm :global(.agent-label) { font-family: var(--font-mono); font-size: 0.8em; font-weight: 700; text-transform: uppercase; color: var(--accent, #3fb950); background: rgba(63,185,80,0.08); padding: 1px 5px; border-radius: 2px; border: 1px solid rgba(63,185,80,0.12); }
+  .prose-sm :global(.ticker) { font-family: var(--font-mono); font-weight: 700; color: #79c0ff; background: rgba(88,166,255,0.08); padding: 0 3px; border-radius: 2px; font-size: 0.88em; }
 
   /* Callouts */
   .prose-sm :global(.callout) { margin: 0.4em 0; padding: 5px 8px; border-radius: 4px; border: 1px solid rgba(48,54,61,0.5); }
