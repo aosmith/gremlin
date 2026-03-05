@@ -4,6 +4,26 @@ A local, browser-native multi-agent coordinator. A TypeScript module routes all 
 
 ---
 
+## Getting started
+
+Pick a provider, get a model, and run. Here are links for the most common setups:
+
+| Provider | Type | Get started |
+|---|---|---|
+| **Ollama** | Local, free | [ollama.com](https://ollama.com) — install, then `ollama pull llama3.2` |
+| **LM Studio** | Local, free | [lmstudio.ai](https://lmstudio.ai) — download a model, start the local server |
+| **WebLLM** | In-browser, free | No install — select WebLLM in Settings, pick a model, runs via [WebGPU](https://developer.chrome.com/docs/web-platform/webgpu) (Chrome 113+) |
+| **OpenRouter** | Cloud, free tier | [openrouter.ai](https://openrouter.ai) — create account, copy API key |
+| **Groq** | Cloud, free tier | [console.groq.com](https://console.groq.com) — create account, copy API key |
+| **OpenAI** | Cloud, paid | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
+| **Anthropic** | Cloud, paid | [console.anthropic.com](https://console.anthropic.com) — create API key |
+| **Google Gemini** | Cloud, free tier | [aistudio.google.com](https://aistudio.google.com) — create API key |
+| **Together** | Cloud, paid | [api.together.xyz](https://api.together.xyz) — create account, copy API key |
+
+Once you have a provider ready, open GREMLIN → **Settings** (⚙) → pick your provider → paste your key (if needed) → pick a model → **Save**. Type a task and hit **Run**.
+
+---
+
 ## Features
 
 | | |
@@ -273,23 +293,13 @@ GREMLIN is a single HTML file (`web/dist/index.html`) that can be hosted anywher
 
 ### What works out of the box
 
-- **Web search** — DuckDuckGo is the default provider, routed through a built-in CORS proxy. No API key or configuration needed.
-- **Cloud LLM providers** — OpenRouter, Anthropic, OpenAI, Gemini, Groq, Together all route through the CORS proxy automatically. Just add your API key in Settings.
+- **Most LLM providers** — OpenAI, Anthropic, OpenRouter, Gemini, Together all support browser CORS natively. Just add your API key in Settings.
+- **Web search** — DuckDuckGo is the default provider, routed through a CORS proxy. No API key needed.
 - **All UI, modes, and agents** — everything runs client-side.
-
-### Local LLM providers (Ollama, LM Studio)
-
-If you host the site on a custom domain (e.g. `gremlin.example.com`) and want to use a local Ollama instance, you need to allow the origin:
-
-```bash
-OLLAMA_ORIGINS=https://gremlin.example.com ollama serve
-```
-
-This is because Ollama only accepts requests from `localhost` by default. LM Studio has a similar CORS setting in its server preferences.
 
 ### CORS proxy
 
-A Cloudflare Worker in `proxy/` handles CORS for external APIs (search providers and cloud LLM endpoints). It's already deployed and configured as the default — no setup required.
+A few services block browser requests (Groq, DuckDuckGo, Brave Search). GREMLIN ships with a default Cloudflare Worker proxy for those. Providers that support browser CORS (OpenAI, Anthropic, OpenRouter, Gemini, Together, Serper, Tavily, and all local providers) always go direct.
 
 To deploy your own proxy:
 
@@ -299,7 +309,17 @@ npx wrangler login
 npx wrangler deploy
 ```
 
-Then update the proxy URL in `web/src/lib/types.ts` (`DEFAULT_SETTINGS.proxyUrl`) or override it per-user in Settings.
+Then update the proxy URL in Settings → Advanced, or in `web/src/lib/types.ts` (`DEFAULT_SETTINGS.proxyUrl`).
+
+### Local LLM providers (Ollama, LM Studio)
+
+If you host the site on a custom domain (e.g. `gremlin.example.com`) and want to use a local Ollama instance, you need to allow the origin:
+
+```bash
+OLLAMA_ORIGINS=https://gremlin.example.com ollama serve
+```
+
+Ollama only accepts requests from `localhost` by default. LM Studio has a similar CORS setting in its server preferences.
 
 ---
 
