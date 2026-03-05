@@ -620,8 +620,8 @@ export class AgentRunner {
 
         const msg = err instanceof Error ? err.message : String(err)
 
-        // Don't retry errors that will just repeat (e.g. tool-call loop exhausted)
-        const noRetry = msg.includes('loop exceeded') || msg.includes('CORS')
+        // Don't retry errors that will just repeat
+        const noRetry = msg.includes('loop exceeded') || msg.includes('CORS') || msg.includes('Failed to fetch')
         if (attempt < MAX_RETRIES && !noRetry) {
           const delay = RETRY_BASE_MS * Math.pow(2, attempt)
           this.cb.onLog(`⚠ ${agent.name} failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}): ${msg} — retrying in ${(delay / 1000).toFixed(0)}s`)
@@ -700,14 +700,12 @@ ORCHESTRATOR INSTRUCTIONS — You are the team lead. You must NOT do all the wor
 • Never call mark_done() on your first turn` : ''}
 ${agent.role === 'synthesizer' ? `
 SYNTHESIZER INSTRUCTIONS — When you call mark_done(result), the "result" is shown directly to a human user.
-Write it as clear, well-structured Markdown prose — NOT JSON, NOT bullet-point dumps.
-Use headings (##, ###), paragraphs, bold for emphasis, tables, and lists where appropriate.
-Write for a human reader: be COMPREHENSIVE and THOROUGH. Include:
+Follow the output format specified in YOUR system prompt above. If your prompt says to output JSON, output JSON. If not, use rich Markdown.
+Be COMPREHENSIVE and THOROUGH. Include:
 • ALL specific data from workers — names, numbers, tickers, percentages, dollar amounts, rankings, scores, etc.
 • Full analysis and reasoning, not just conclusions
 • Actionable recommendations with concrete details
 • Trade-offs, caveats, and areas of uncertainty
-• A structured breakdown — use multiple sections with headings
 CRITICAL: You MUST include every concrete data point the workers provided. If workers listed tickers, include ALL tickers.
 If workers provided numbers, include ALL numbers. Never replace specific data with vague summaries.
 Do NOT say "based on the analysis" or "as discussed" — include the ACTUAL data inline.

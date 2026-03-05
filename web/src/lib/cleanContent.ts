@@ -84,6 +84,22 @@ export function cleanContent(raw: string): string {
     parts.push(`\u2605 Result: ${obj.result.trim()}`)
   }
 
+  // If we parsed JSON but got nothing from protocol fields, render all
+  // string/number/boolean values as readable key-value pairs instead of raw JSON
+  if (parts.length === 0) {
+    for (const [key, val] of Object.entries(obj)) {
+      if (val === null || val === undefined) continue
+      if (typeof val === 'string' && val.trim()) {
+        parts.push(`**${prettifyName(key)}**: ${val.trim()}`)
+      } else if (typeof val === 'number' || typeof val === 'boolean') {
+        parts.push(`**${prettifyName(key)}**: ${val}`)
+      } else if (Array.isArray(val) && val.length > 0) {
+        const items = val.map((v) => typeof v === 'string' ? v : JSON.stringify(v))
+        parts.push(`**${prettifyName(key)}**:\n${items.map((i) => `  • ${i}`).join('\n')}`)
+      }
+    }
+  }
+
   return parts.length > 0 ? parts.join('\n') : stripped
 }
 

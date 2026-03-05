@@ -102,7 +102,7 @@ Switch modes with the tab bar below the navbar. Each mode loads a different set 
 |---|---|---|
 | **General** 💼 | Orchestrator · Analyst · Critic · QA Analyst · Synthesizer | Research, writing, analysis |
 | **Engineering** ⚙ | CTO · Frontend Dev · Backend Dev · Full-Stack Dev · DevOps · QA · Security · Staff Engineer | Software projects |
-| **Finance** 📈 | CIO · Macro Strategist · Quant Analyst · Risk Manager · Sector Analyst · Portfolio Strategist | Investment research |
+| **Finance** 📈 | Capital Allocator · Value Analyst · Activist Analyst · Risk Manager · Sector Analyst · News & Sentiment · Investment Strategist | Investment research |
 | **Industrial** 🏭 | General Manager · Manufacturing Eng · Operations Manager · Supply Chain · Quality Eng · Commercial Manager · Plant Controller | Manufacturing, operations & supply chain |
 | **Biomedical** 🧬 | Chief Dev Officer · Research Scientist · Regulatory Affairs · Clinical Affairs · CMC · Quality & Compliance · Pharmacovigilance · Program Director | Drug & device development |
 | **+ New Mode** | Snapshot of your current agents | Any custom team |
@@ -286,6 +286,52 @@ Browser support: Chrome 91+, Firefox 89+, Safari 16.4+, Edge 91+.
 
 ---
 
+## Deployment
+
+GREMLIN is a single HTML file (`web/dist/index.html`) that can be hosted anywhere — Cloudflare Pages, GitHub Pages, Netlify, S3, or any static file server.
+
+### What works out of the box
+
+- **Web search** — DuckDuckGo is the default provider, routed through a built-in CORS proxy. No API key or configuration needed.
+- **Cloud LLM providers** — OpenRouter, Anthropic, OpenAI, Gemini, Groq, Together all route through the CORS proxy automatically. Just add your API key in Settings.
+- **All UI, modes, and agents** — everything runs client-side.
+
+### Local LLM providers (Ollama, LM Studio)
+
+If you host the site on a custom domain (e.g. `gremlin.example.com`) and want to use a local Ollama instance, you need to allow the origin:
+
+```bash
+OLLAMA_ORIGINS=https://gremlin.example.com ollama serve
+```
+
+This is because Ollama only accepts requests from `localhost` by default. LM Studio has a similar CORS setting in its server preferences.
+
+### CORS proxy
+
+A Cloudflare Worker in `proxy/` handles CORS for external APIs (search providers and cloud LLM endpoints). It's already deployed and configured as the default — no setup required.
+
+To deploy your own proxy:
+
+```bash
+cd proxy
+npx wrangler login
+npx wrangler deploy
+```
+
+Then update the proxy URL in `web/src/lib/types.ts` (`DEFAULT_SETTINGS.proxyUrl`) or override it per-user in Settings.
+
+### Search providers
+
+| Provider | API key needed | Notes |
+|---|---|---|
+| **DuckDuckGo** (default) | No | HTML scrape via CORS proxy |
+| **Brave Search** | Yes | [brave.com/search/api](https://brave.com/search/api/) |
+| **Serper** (Google) | Yes | [serper.dev](https://serper.dev) |
+| **Tavily** | Yes | [tavily.com](https://tavily.com) |
+| **SearXNG** | No | Self-hosted; set your instance URL in Settings |
+
+---
+
 ## Troubleshooting
 
 **`WASM coordinator failed to load`**
@@ -298,8 +344,9 @@ Browser support: Chrome 91+, Firefox 89+, Safari 16.4+, Edge 91+.
 → Check your API key in Settings.
 
 **`CORS error` in browser console**
-→ You are opening `index.html` as a `file://` URL. Serve it over HTTP:
-`npx serve web/dist` or `python3 -m http.server 3000 -d web/dist`
+→ If opening locally: serve over HTTP, not `file://`: `npx serve web/dist`
+→ If using Ollama from a hosted site: set `OLLAMA_ORIGINS=https://your-domain.com` when starting Ollama
+→ If web search fails: check that the CORS proxy URL is set in Settings (the default should work)
 
 **WebLLM: `WebGPU is not available`**
 → Use Chrome 113+ or Edge 113+. Firefox and Safari do not support WebGPU by default.

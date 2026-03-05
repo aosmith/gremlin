@@ -141,7 +141,7 @@ function highlightTickers(html: string): string {
  */
 function styleAgentLabels(html: string): string {
   // Match [Agent Name]: — 1-3 words, colon required, & may be HTML-encoded as &amp;
-  return html.replace(/\[([A-Z][A-Za-z]{1,15}(?:[  &;]+[A-Z][A-Za-z]{1,15}){0,2})\]\s*:/g, (match, name: string) => {
+  return html.replace(/\[([A-Z][A-Za-z]{1,15}(?:(?:\s|&amp;|\s&amp;\s|&\s|\s&)+[A-Z][A-Za-z]{1,15}){0,2})\]\s*:/g, (match, name: string) => {
     // Skip markdown link syntax — [text](url)
     if (match.endsWith('](')) return match
     // Decode &amp; back to & for display

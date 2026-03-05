@@ -27,7 +27,12 @@ function lsDel(key: string) {
   try { localStorage.removeItem(key) } catch { /* ignore */ }
 }
 
-function loadSettings(): Settings  { return { ...DEFAULT_SETTINGS, ...ls('gremlin_settings', DEFAULT_SETTINGS) } }
+function loadSettings(): Settings  {
+  const saved = { ...DEFAULT_SETTINGS, ...ls('gremlin_settings', DEFAULT_SETTINGS) }
+  // Backfill proxy URL for users who saved settings before the default was added
+  if (!saved.proxyUrl && DEFAULT_SETTINGS.proxyUrl) saved.proxyUrl = DEFAULT_SETTINGS.proxyUrl
+  return saved
+}
 function saveSettings(s: Settings) { lsSet('gremlin_settings', s) }
 
 function loadMode(): AppMode  { return ls<AppMode>('gremlin_mode', 'general') }
@@ -36,7 +41,7 @@ function saveMode(m: AppMode) { lsSet('gremlin_mode', m) }
 // ── Builtin preset versioning ────────────────────────────────────────────────
 // Bump this whenever builtin mode agents are updated. On load, new agents that
 // don't exist in the user's saved config are merged in — but user edits are preserved.
-const BUILTIN_AGENTS_VERSION = 7
+const BUILTIN_AGENTS_VERSION = 8
 const VERSION_KEY = 'gremlin_builtin_agents_version'
 
 function migrateBuiltinAgents() {
@@ -589,10 +594,9 @@ class GremlinStore {
   }
 
   private updateAgentState(agentId: string, patch: Partial<AgentState>) {
-    const idx = this.agentStates.findIndex((a) => a.id === agentId)
-    if (idx !== -1) {
-      this.agentStates[idx] = { ...this.agentStates[idx], ...patch }
-    }
+    this.agentStates = this.agentStates.map((a) =>
+      a.id === agentId ? { ...a, ...patch } : a
+    )
     this.saveSession()
   }
 
@@ -771,10 +775,8 @@ class GremlinStore {
     this.task = text
     savePersistedTask(this.task)
 
-    // Reset agent states
-    for (let i = 0; i < this.agentStates.length; i++) {
-      this.agentStates[i] = { ...this.agentStates[i], status: 'idle' as const }
-    }
+    // Reset agent states (full array reassign for Svelte 5 reactivity)
+    this.agentStates = this.agentStates.map((a) => ({ ...a, status: 'idle' as const }))
 
     // Start a new run — the runner will see the existing coordinator history
     this.isRunning       = true
@@ -869,12 +871,10 @@ class GremlinStore {
 
   private syncAgentStates() {
     const coordAgents = coord.getAgents()
-    for (let i = 0; i < this.agentStates.length; i++) {
-      const ca = coordAgents.find((a) => a.id === this.agentStates[i].id)
-      if (ca) {
-        this.agentStates[i] = { ...this.agentStates[i], messageCount: ca.messageCount, unreadCount: ca.unreadCount }
-      }
-    }
+    this.agentStates = this.agentStates.map((a) => {
+      const ca = coordAgents.find((c) => c.id === a.id)
+      return ca ? { ...a, messageCount: ca.messageCount, unreadCount: ca.unreadCount } : a
+    })
   }
 
   /** Reset all non-done, non-error agents to 'done' when a run finishes. Reassigns the full array for reactivity. */

@@ -13,6 +13,7 @@
   import CodeViewer from './components/CodeViewer.svelte'
   import NewModeModal from './components/NewModeModal.svelte'
   import SessionHistory from './components/SessionHistory.svelte'
+  import HelpModal from './components/HelpModal.svelte'
   import { formatOutputAsMarkdown, cleanOutputForCopy } from './lib/cleanContent'
   import { enhanceProse } from './lib/tableCards'
 
@@ -34,6 +35,13 @@
   // Right panel: prefer code viewer in engineering mode when a file is selected
   const showCodeViewer = $derived(isEngineering && store.selectedFile !== null)
   const showAgentPanel = $derived(selectedAgent !== null && !showCodeViewer)
+
+  // Help modal — auto-show on first visit
+  let showHelp = $state(!localStorage.getItem('gremlin_help_seen'))
+  function closeHelp() {
+    showHelp = false
+    localStorage.setItem('gremlin_help_seen', '1')
+  }
 
   // History modal
   let showHistory = $state(false)
@@ -75,6 +83,15 @@
     store.followUp(text)
   }
 
+  // Run or follow-up: if there's an existing session, continue it; otherwise start fresh
+  function runOrFollowUp() {
+    if (store.messages.length > 0) {
+      store.followUp(store.task)
+    } else {
+      store.startRun()
+    }
+  }
+
   // Image attach
   let fileInput: HTMLInputElement | undefined = $state()
   let isDraggingFile = $state(false)
@@ -95,6 +112,9 @@
 <!-- ── Modals ── -->
 {#if showHistory}
   <SessionHistory onclose={() => (showHistory = false)} />
+{/if}
+{#if showHelp}
+  <HelpModal onclose={closeHelp} openSettings={() => (store.showSettings = true)} />
 {/if}
 {#if store.showSettings}
   <SettingsModal onclose={() => (store.showSettings = false)} />
@@ -341,7 +361,7 @@
                 store.task = (e.target as HTMLInputElement).value
                 store.saveTask()
               }}
-              onkeydown={(e) => e.key === 'Enter' && store.settings.model.trim() && store.startRun()}
+              onkeydown={(e) => e.key === 'Enter' && store.settings.model.trim() && runOrFollowUp()}
               onpaste={async (e) => {
                 const items = e.clipboardData?.items
                 if (!items) return
@@ -424,6 +444,11 @@
         >🕐</button>
         <button
           class="ghost icon btn-settings"
+          onclick={() => (showHelp = true)}
+          title="Help"
+        >?</button>
+        <button
+          class="ghost icon btn-settings"
           onclick={() => (store.showSettings = true)}
           title="Settings"
         >⚙</button>
@@ -432,7 +457,7 @@
         {:else}
           <button
             class="primary run-btn"
-            onclick={() => store.startRun()}
+            onclick={() => runOrFollowUp()}
             disabled={!store.task.trim() || !store.settings.model.trim()}
             title={!store.settings.model.trim() ? 'No model selected — open Settings' : 'Run (Enter)'}
           >▶ Run</button>
