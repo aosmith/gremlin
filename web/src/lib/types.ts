@@ -282,7 +282,7 @@ export const AGENT_COLORS = [
 
 /** Appended to every agent prompt so they know to use all available tools. */
 const webHint = ' You have access to tools including web search — use all available tools proactively. Search the internet to look up current data, verify facts, check recent developments, and ground your analysis in real-time information rather than relying on potentially outdated training knowledge.'
-  + ' Formatting: use short, clear titles and headings (2–5 words). In tables, keep column headers concise (1–3 words). Avoid verbose or compound headings like "Investment Thesis & Multi-Year Outlook" — prefer "Thesis" or "Outlook". Be direct and scannable.'
+  + ' Formatting: use short, clear titles and headings (2–5 words). In tables, keep column headers concise (1–3 words). Avoid verbose or compound headings like "Investment Thesis & Multi-Year Outlook" — prefer "Thesis" or "Outlook". Be direct and scannable. Never mention your tools or methodology (e.g. "I searched the web", "using web search") — just present findings directly.'
 
 export function defaultAgents(): AgentConfig[] {
   return [
