@@ -46,40 +46,17 @@
   // History modal
   let showHistory = $state(false)
 
-  // Results modal
-  let showResultsModal = $state(!!store.output)
-  let resultsDismissed = $state(false)
+  // Final output rendering (shown inline in Activity Monitor)
   const outputHtml = $derived(store.output
     ? enhanceProse(marked.parse(formatOutputAsMarkdown(store.output)) as string)
     : ''
   )
 
-  // Show the results modal only when the run finishes with output (not mid-run)
-  $effect(() => {
-    if (store.output && !store.isRunning) {
-      showResultsModal = true
-      resultsDismissed = false
-    }
-  })
-
-  function dismissResults() {
-    showResultsModal = false
-    resultsDismissed = true
-  }
-
   function copyOutput() {
     if (store.output) navigator.clipboard.writeText(cleanOutputForCopy(store.output))
   }
 
-  // Follow-up reply
-  let replyText = $state('')
-
-  function sendReply() {
-    const text = replyText.trim()
-    if (!text) return
-    replyText = ''
-    showResultsModal = false
-    resultsDismissed = false
+  function handleReply(text: string) {
     store.followUp(text)
   }
 
@@ -258,51 +235,6 @@
           const input = document.getElementById('extra-instruction') as HTMLInputElement
           store.continueWithRounds(extraRoundsDefault, input?.value ?? '')
         }}>+ {extraRoundsDefault} Rounds</button>
-      </div>
-    </div>
-  </div>
-{/if}
-
-<!-- ── Results modal ── -->
-{#if showResultsModal && store.output}
-  <div class="modal-backdrop" role="dialog" aria-modal="true">
-    <div class="results-modal">
-      <div class="results-header">
-        <div class="results-title">
-          <span class="output-dot"></span>
-          Results
-          <span class="results-mode-badge">{store.currentModeInfo.icon} {store.currentModeInfo.name}</span>
-        </div>
-        <div class="results-actions">
-          <button class="ghost btn-sm" onclick={copyOutput} title="Copy to clipboard">Copy</button>
-          <button class="ghost icon" onclick={dismissResults} title="Close">✕</button>
-        </div>
-      </div>
-
-      {#if store.task}
-        <div class="results-task">
-          <span class="results-task-label">Task</span>
-          <span class="results-task-text">{store.task}</span>
-        </div>
-      {/if}
-
-      <div class="results-body prose">
-        {@html outputHtml}
-      </div>
-
-      <div class="reply-bar">
-        <input
-          class="reply-input"
-          type="text"
-          placeholder="Reply — ask a follow-up or give feedback…"
-          bind:value={replyText}
-          onkeydown={(e) => e.key === 'Enter' && sendReply()}
-        />
-        <button
-          class="primary reply-btn"
-          onclick={sendReply}
-          disabled={!replyText.trim()}
-        >Reply</button>
       </div>
     </div>
   </div>
@@ -611,6 +543,10 @@
         logs={store.logs}
         streamingAgentId={store.streamingAgentId}
         streamingText={store.streamingText}
+        outputHtml={outputHtml}
+        isRunning={store.isRunning}
+        onCopy={copyOutput}
+        onReply={handleReply}
       />
     </div>
 
@@ -633,17 +569,7 @@
     {/if}
   </div>
 
-  <!-- "View Results" floating badge (shown when modal dismissed but output exists) -->
-  {#if resultsDismissed && store.output}
-    <button
-      class="results-badge"
-      onclick={() => { showResultsModal = true; resultsDismissed = false }}
-      title="View results"
-    >
-      <span class="output-dot"></span>
-      View Results
-    </button>
-  {/if}
+
 </div>
 
 <style>
@@ -1049,368 +975,6 @@
   @keyframes slide-in {
     from { opacity: 0; transform: translateX(20px); }
     to   { opacity: 1; transform: translateX(0); }
-  }
-
-  /* ── Results modal ──────────────────────────────────────────────────────── */
-  .results-modal {
-    width: min(720px, 90vw);
-    max-height: 80vh;
-    display: flex;
-    flex-direction: column;
-    background: rgba(9, 12, 18, 0.96);
-    border: 1px solid var(--glass-tinted-border);
-    border-radius: var(--radius-lg, 12px);
-    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
-    animation: modal-in 0.2s ease-out;
-  }
-  @keyframes modal-in {
-    from { opacity: 0; transform: translateY(20px) scale(0.97); }
-    to   { opacity: 1; transform: translateY(0) scale(1); }
-  }
-
-  .results-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 18px;
-    border-bottom: 1px solid var(--glass-border);
-    flex-shrink: 0;
-  }
-  .results-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    font-weight: 800;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    color: var(--color-accent);
-  }
-  .results-mode-badge {
-    font-size: 10px;
-    font-weight: 600;
-    text-transform: none;
-    letter-spacing: 0;
-    padding: 2px 8px;
-    border-radius: 4px;
-    background: var(--glass);
-    border: 1px solid var(--glass-border);
-    color: var(--color-text-3);
-  }
-  .results-actions {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  .results-task {
-    padding: 8px 18px;
-    font-size: 12px;
-    border-bottom: 1px solid var(--glass-border);
-    display: flex;
-    gap: 8px;
-    align-items: baseline;
-    flex-shrink: 0;
-  }
-  .results-task-label {
-    font-size: 9px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--color-text-4);
-    flex-shrink: 0;
-  }
-  .results-task-text {
-    color: var(--color-text-3);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .results-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: 20px 24px;
-    min-height: 0;
-  }
-
-  .output-dot {
-    width: 7px; height: 7px;
-    border-radius: 50%;
-    background: var(--color-accent);
-    box-shadow: 0 0 8px rgba(63,185,80,0.6);
-    flex-shrink: 0;
-  }
-
-  /* ── Prose (markdown) styling ───────────────────────────────────────────── */
-  .prose {
-    font-size: 14px;
-    line-height: 1.75;
-    color: var(--color-text);
-    word-break: break-word;
-  }
-  .prose :global(h1) { font-size: 1.5em; font-weight: 700; margin: 1.2em 0 0.6em; color: var(--color-accent); }
-  .prose :global(h2) { font-size: 1.25em; font-weight: 700; margin: 1em 0 0.5em; color: var(--color-text); }
-  .prose :global(h3) { font-size: 1.1em; font-weight: 600; margin: 0.8em 0 0.4em; color: var(--color-text); }
-  .prose :global(p)  { margin: 0.6em 0; }
-  .prose :global(ul), .prose :global(ol) { margin: 0.5em 0; padding-left: 1.5em; }
-  .prose :global(li) { margin: 0.25em 0; }
-  .prose :global(strong) { font-weight: 700; color: var(--color-text); }
-  .prose :global(em) { font-style: italic; }
-  .prose :global(code) {
-    font-family: var(--font-mono);
-    font-size: 0.9em;
-    padding: 2px 5px;
-    background: rgba(255,255,255,0.06);
-    border-radius: 3px;
-    color: var(--color-accent-2);
-  }
-  .prose :global(pre) {
-    background: rgba(0,0,0,0.3);
-    border: 1px solid var(--glass-border);
-    border-radius: 6px;
-    padding: 12px 14px;
-    overflow-x: auto;
-    margin: 0.8em 0;
-    font-size: 12px;
-    line-height: 1.6;
-  }
-  .prose :global(pre code) {
-    background: none;
-    padding: 0;
-    font-size: inherit;
-  }
-  .prose :global(.agent-label) {
-    font-family: var(--font-mono);
-    font-size: 0.8em;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--color-accent);
-    background: rgba(63,185,80,0.08);
-    padding: 2px 7px;
-    border-radius: 3px;
-    border: 1px solid rgba(63,185,80,0.15);
-    white-space: nowrap;
-  }
-  .prose :global(.ticker) {
-    font-family: var(--font-mono);
-    font-weight: 700;
-    color: var(--color-accent-2);
-    background: rgba(88,166,255,0.08);
-    padding: 1px 4px;
-    border-radius: 3px;
-    font-size: 0.9em;
-    letter-spacing: 0.02em;
-    white-space: nowrap;
-  }
-  .prose :global(blockquote) {
-    border-left: 3px solid var(--color-accent);
-    padding: 4px 12px;
-    margin: 0.6em 0;
-    color: var(--color-text-3);
-  }
-  .prose :global(hr) {
-    border: none;
-    border-top: 1px solid var(--glass-border);
-    margin: 1.2em 0;
-  }
-  /* Small tables (3 or fewer columns) stay as tables */
-  .prose :global(.table-wrap) {
-    overflow-x: auto;
-    margin: 0.8em 0;
-    border: 1px solid var(--glass-border);
-    border-radius: 6px;
-  }
-  .prose :global(table) {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 12px;
-    margin: 0;
-  }
-  .prose :global(th), .prose :global(td) {
-    border: 1px solid rgba(48,54,61,0.5);
-    padding: 5px 10px;
-    text-align: left;
-  }
-  .prose :global(th) {
-    background: rgba(63,185,80,0.06);
-    font-weight: 700;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--color-accent);
-  }
-  .prose :global(tr:hover td) {
-    background: rgba(255,255,255,0.02);
-  }
-
-  /* Card grid — wide tables converted to cards */
-  .prose :global(.card-grid) {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 10px;
-    margin: 0.8em 0;
-  }
-  .prose :global(.data-card) {
-    background: rgba(255,255,255,0.02);
-    border: 1px solid var(--glass-border);
-    border-radius: 8px;
-    padding: 12px 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    transition: border-color var(--t-fast);
-  }
-  .prose :global(.data-card:hover) {
-    border-color: rgba(63,185,80,0.3);
-  }
-  .prose :global(.card-title) {
-    font-weight: 700;
-    font-size: 13px;
-    color: var(--color-accent);
-    padding-bottom: 6px;
-    border-bottom: 1px solid rgba(63,185,80,0.15);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .prose :global(.card-fields) {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 4px 12px;
-  }
-  .prose :global(.card-field) {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    padding: 2px 0;
-  }
-  .prose :global(.card-label) {
-    font-size: 9px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--color-text-4);
-    font-family: var(--font-mono);
-  }
-  .prose :global(.card-value) {
-    font-size: 12px;
-    color: var(--color-text-2);
-    line-height: 1.3;
-  }
-
-  /* ── Callout boxes for search results and data sections ──────────────── */
-  .prose :global(.callout) {
-    margin: 1em 0;
-    padding: 12px 16px;
-    border-radius: 8px;
-    border: 1px solid var(--glass-border);
-  }
-  .prose :global(.callout > h2),
-  .prose :global(.callout > h3) {
-    margin-top: 0;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .prose :global(.callout > h2::before),
-  .prose :global(.callout > h3::before) {
-    font-size: 0.85em;
-    flex-shrink: 0;
-  }
-  .prose :global(.callout-source) {
-    background: rgba(88,166,255,0.04);
-    border-color: rgba(88,166,255,0.2);
-    border-left: 3px solid rgba(88,166,255,0.5);
-  }
-  .prose :global(.callout-source > h2),
-  .prose :global(.callout-source > h3) {
-    color: #79c0ff;
-    font-size: 0.85em;
-  }
-  .prose :global(.callout-source > h2::before),
-  .prose :global(.callout-source > h3::before) {
-    content: '\1F50D'; /* magnifying glass */
-  }
-  .prose :global(.callout-data) {
-    background: rgba(210,153,34,0.04);
-    border-color: rgba(210,153,34,0.2);
-    border-left: 3px solid rgba(210,153,34,0.45);
-  }
-  .prose :global(.callout-data ul) {
-    margin: 0;
-    padding-left: 1.2em;
-  }
-  .prose :global(.callout-data li) {
-    font-size: 13px;
-    line-height: 1.7;
-  }
-  .prose :global(.section-break) {
-    height: 0;
-    margin: 1.5em 0 0.5em;
-    border-top: 1px solid rgba(48,54,61,0.4);
-  }
-
-  /* ── View Results floating badge ────────────────────────────────────────── */
-  .results-badge {
-    position: absolute;
-    bottom: 16px;
-    right: 16px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 14px;
-    background: var(--glass-tinted);
-    border: 1px solid var(--glass-tinted-border);
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--color-accent);
-    cursor: pointer;
-    z-index: 15;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
-    transition: all var(--t-fast);
-    animation: slide-up 0.2s ease-out;
-  }
-  .results-badge:hover {
-    background: rgba(63,185,80,0.15);
-    transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(0,0,0,0.5);
-  }
-
-  @keyframes slide-up {
-    from { opacity: 0; transform: translateY(10px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-
-  /* ── Reply bar (used in results modal) ─────────────────────────────────── */
-  .reply-bar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 18px 12px;
-    border-top: 1px solid var(--glass-border);
-    flex-shrink: 0;
-  }
-  .reply-input {
-    flex: 1;
-    background: var(--glass);
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius);
-    color: var(--color-text);
-    font-size: 13px;
-    padding: 7px 12px;
-    outline: none;
-    transition: all var(--t-fast);
-  }
-  .reply-input:focus {
-    background: var(--glass-tinted);
-    border-color: var(--glass-tinted-border);
-    box-shadow: 0 0 0 2px rgba(63,185,80,0.10);
-  }
-  .reply-btn {
-    flex-shrink: 0;
   }
 
   /* ── Agent suggestion modal ──────────────────────────────────────────── */

@@ -81,18 +81,24 @@ async function* parseSSE(response: Response): AsyncGenerator<{ event?: string; d
   }
 }
 
-// ── OpenAI SSE stream parser ─────────────────────────────────────────────────
+// ── Shared types ─────────────────────────────────────────────────────────────
 
-interface OAIStreamToolCall {
+interface OAIToolCall {
   id: string
   type: 'function'
   function: { name: string; arguments: string }
 }
 
+type OAIMsg =
+  | { role: 'system' | 'user' | 'assistant'; content: string | null; tool_calls?: OAIToolCall[] }
+  | { role: 'tool'; tool_call_id: string; content: string }
+
+// ── OpenAI SSE stream parser ─────────────────────────────────────────────────
+
 async function streamOpenAIResponse(
   resp: Response,
   onStream?: StreamCallback,
-): Promise<{ content: string; toolCalls: OAIStreamToolCall[] }> {
+): Promise<{ content: string; toolCalls: OAIToolCall[] }> {
   let content = ''
   const toolCallMap = new Map<number, { id: string; name: string; args: string }>()
 
@@ -200,12 +206,15 @@ async function streamAnthropicResponse(
  * Local targets and domains with native browser CORS support go direct.
  */
 export function proxiedFetch(url: string, init: RequestInit, settings: Settings): Promise<Response> {
-  if (!settings.proxyUrl || !needsProxy(url)) return fetch(url, init)
+  if (!needsProxy(url)) return fetch(url, init)
+
+  // Use configured proxy, or fall back to built-in Vite dev server proxy
+  const proxyUrl = settings.proxyUrl || '/cors-proxy'
 
   const headers = new Headers(init.headers)
   headers.set('X-Target-URL', url)
 
-  return fetch(settings.proxyUrl.replace(/\/$/, ''), {
+  return fetch(proxyUrl.replace(/\/$/, ''), {
     ...init,
     headers,
   })
@@ -312,22 +321,12 @@ async function callOpenAIWithTools(
   executor?: ToolExecutor,
   onStream?: StreamCallback,
 ): Promise<string> {
-  type OAIMsg =
-    | { role: 'system' | 'user' | 'assistant'; content: string | null; tool_calls?: OAIToolCall[] }
-    | { role: 'tool'; tool_call_id: string; content: string }
-
-  interface OAIToolCall {
-    id: string
-    type: 'function'
-    function: { name: string; arguments: string }
-  }
-
   let activeTools: OAITool[] | undefined = tools
   const msgs: OAIMsg[] = [{ role: 'system', content: system }, ...messages.map((m) => ({ role: m.role, content: toOaiContent(m) } as OAIMsg))]
 
   // Disable streaming for local Ollama — SSE parsing can hang and local latency is minimal
   const isLocalOllama = settings.apiEndpoint.includes('localhost:11434') || settings.apiEndpoint.includes('127.0.0.1:11434')
-  for (let round = 0; round < 8; round++) {
+  for (let round = 0; round < 4; round++) {
     let resp: Response
     const useStream = !!onStream && !isLocalOllama
     try {
@@ -383,6 +382,13 @@ async function callOpenAIWithTools(
   throw new Error('Tool-call loop exceeded max rounds')
 }
 
+/** Combine an optional parent abort signal with a per-call timeout. */
+function llmSignal(signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(90_000)
+  if (!signal) return timeout
+  return AbortSignal.any([signal, timeout])
+}
+
 function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[], signal?: AbortSignal, stream = false) {
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (settings.apiKey.trim()) headers['authorization'] = `Bearer ${settings.apiKey}`
@@ -402,7 +408,7 @@ function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[], si
     body.tool_choice = 'auto'
   }
 
-  return proxiedFetch(settings.apiEndpoint, { method: 'POST', headers, body: JSON.stringify(body), signal }, settings)
+  return proxiedFetch(settings.apiEndpoint, { method: 'POST', headers, body: JSON.stringify(body), signal: llmSignal(signal) }, settings)
     .then((r) => {
       if (!r.ok) return r.text().then((t) => {
         // Ollama returns a plain error object when the model isn't installed
@@ -451,7 +457,7 @@ async function callAnthropicWithTools(
 
   const msgs: AMsg[] = messages.map((m) => ({ role: m.role, content: toAnthropicContent(m) }))
 
-  for (let round = 0; round < 8; round++) {
+  for (let round = 0; round < 4; round++) {
     const useStream = !!onStream
     const resp = await anthropicFetch(settings, system, msgs, tools, signal, useStream)
 
@@ -522,7 +528,7 @@ function anthropicFetch(
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify(body),
-    signal,
+    signal: llmSignal(signal),
   }, settings).then((r) => {
     if (!r.ok) return r.text().then((t) => { throw new Error(`Anthropic ${r.status}: ${t}`) })
     return r
@@ -543,20 +549,10 @@ async function callWebLLMWithTools(
 ): Promise<string> {
   const { getEngine } = await import('./webllm')
 
-  type OAIMsg =
-    | { role: 'system' | 'user' | 'assistant'; content: string | null; tool_calls?: OAIToolCall[] }
-    | { role: 'tool'; tool_call_id: string; content: string }
-
-  interface OAIToolCall {
-    id: string
-    type: 'function'
-    function: { name: string; arguments: string }
-  }
-
   const eng = await getEngine(settings.model, onProgress)
   const msgs: OAIMsg[] = [{ role: 'system', content: system }, ...messages.map((m) => ({ role: m.role, content: toOaiContent(m) } as OAIMsg))]
 
-  for (let round = 0; round < 8; round++) {
+  for (let round = 0; round < 4; round++) {
     const resp = await eng.chat.completions.create({
       messages: msgs as Parameters<typeof eng.chat.completions.create>[0]['messages'],
       max_tokens: 4096,

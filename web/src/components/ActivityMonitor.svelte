@@ -11,8 +11,21 @@
     logs: string[]
     streamingAgentId?: string | null
     streamingText?: string
+    outputHtml?: string
+    isRunning?: boolean
+    onCopy?: () => void
+    onReply?: (text: string) => void
   }
-  const { messages, agents, logs, streamingAgentId = null, streamingText = '' }: Props = $props()
+  const { messages, agents, logs, streamingAgentId = null, streamingText = '', outputHtml = '', isRunning = false, onCopy, onReply }: Props = $props()
+
+  let replyText = $state('')
+
+  function sendReply() {
+    const text = replyText.trim()
+    if (!text || !onReply) return
+    replyText = ''
+    onReply(text)
+  }
 
   // Messages always expand fully — no truncation
 
@@ -94,6 +107,35 @@
           </span>
         </span>
         <span class="typing-label muted">is thinking…</span>
+      </div>
+    {/if}
+
+    {#if outputHtml && !isRunning}
+      <div class="final-result">
+        <div class="final-result-header">
+          <span class="result-dot"></span>
+          <span class="result-label">Result</span>
+          {#if onCopy}
+            <button class="ghost btn-sm" onclick={onCopy}>Copy</button>
+          {/if}
+        </div>
+        <div class="result-body prose-sm">{@html outputHtml}</div>
+        {#if onReply}
+          <div class="reply-bar">
+            <input
+              class="reply-input"
+              type="text"
+              placeholder="Ask a follow-up…"
+              bind:value={replyText}
+              onkeydown={(e) => e.key === 'Enter' && sendReply()}
+            />
+            <button
+              class="primary reply-btn"
+              onclick={sendReply}
+              disabled={!replyText.trim()}
+            >Reply</button>
+          </div>
+        {/if}
       </div>
     {/if}
   </div>
@@ -383,6 +425,73 @@
     margin: 0.8em 0 0.3em;
     border-top: 1px solid rgba(48,54,61,0.3);
   }
+
+  /* ── Final result block ──────────────────────────────────────────── */
+  .final-result {
+    margin: 8px 10px 12px;
+    border: 1px solid rgba(63,185,80,0.25);
+    border-radius: 8px;
+    background: rgba(63,185,80,0.03);
+    animation: result-in 0.3s ease-out;
+  }
+  @keyframes result-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .final-result-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    border-bottom: 1px solid rgba(63,185,80,0.15);
+  }
+  .result-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px rgba(63,185,80,0.6);
+    flex-shrink: 0;
+  }
+  .result-label {
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--accent);
+    flex: 1;
+  }
+  .result-body {
+    padding: 14px 16px;
+    font-size: 13px;
+    line-height: 1.65;
+  }
+  .reply-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px 10px;
+    border-top: 1px solid rgba(63,185,80,0.12);
+  }
+  .reply-input {
+    flex: 1;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(48,54,61,0.5);
+    border-radius: 5px;
+    color: var(--text);
+    font-size: 12px;
+    padding: 6px 10px;
+    outline: none;
+    transition: all 0.15s ease;
+  }
+  .reply-input:focus {
+    background: rgba(63,185,80,0.04);
+    border-color: rgba(63,185,80,0.3);
+    box-shadow: 0 0 0 2px rgba(63,185,80,0.08);
+  }
+  .reply-btn {
+    flex-shrink: 0;
+  }
+  .btn-sm { font-size: 11px; }
 
   .log-section {
     padding: 8px 14px;

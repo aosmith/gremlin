@@ -100,7 +100,7 @@ export function cleanContent(raw: string): string {
     }
   }
 
-  return parts.length > 0 ? parts.join('\n') : stripped
+  return prettifySnakeCase(parts.length > 0 ? parts.join('\n') : stripped)
 }
 
 /**
@@ -124,6 +124,10 @@ export function formatOutputAsMarkdown(raw: string): string {
   // Check for structured portfolio format (from finance synthesizer)
   const portfolio = tryRenderPortfolio(obj)
   if (portfolio) return portfolio
+
+  // Check for Polymarket trade report format
+  const polyReport = tryRenderPolymarketReport(obj)
+  if (polyReport) return polyReport
 
   // If it parsed as JSON, extract human-readable content from protocol fields
   const sections: string[] = []
@@ -201,6 +205,12 @@ function tryRenderPortfolio(obj: Record<string, unknown>): string | null {
   return renderPortfolioMarkdown(data)
 }
 
+/** Ensure ticker always has $ prefix so highlightTickers can style it. */
+function normTicker(t: string): string {
+  const s = t.trim().replace(/^\$+/, '')
+  return s ? `$${s}` : t
+}
+
 function renderPortfolioMarkdown(data: PortfolioData): string {
   const sections: string[] = []
 
@@ -215,8 +225,9 @@ function renderPortfolioMarkdown(data: PortfolioData): string {
   const hasFV = positions.some((p) => p.fairValue)
   const hasUpside = positions.some((p) => p.upside)
 
-  let header = '| Ticker | Company | Weight | Conviction'
-  let sep = '|---|---|---|---'
+  // Merge ticker+company into "Position" column → becomes a better card title
+  let header = '| Position | Weight | Conviction'
+  let sep = '|---|---|---'
   if (hasPrice) { header += ' | Price'; sep += '|---' }
   if (hasFV) { header += ' | Fair Value'; sep += '|---' }
   if (hasUpside) { header += ' | Upside'; sep += '|---' }
@@ -224,7 +235,8 @@ function renderPortfolioMarkdown(data: PortfolioData): string {
   sep += '|---|---|'
 
   const rows = positions.map((p) => {
-    let row = `| ${p.ticker} | ${p.company} | ${p.weight}% | ${p.conviction}`
+    const ticker = normTicker(p.ticker)
+    let row = `| ${ticker} — ${p.company} | ${p.weight}% | ${p.conviction}`
     if (hasPrice) row += ` | ${p.price ?? '-'}`
     if (hasFV) row += ` | ${p.fairValue ?? '-'}`
     if (hasUpside) row += ` | ${p.upside ?? '-'}`
@@ -238,7 +250,7 @@ function renderPortfolioMarkdown(data: PortfolioData): string {
   const theses = positions.filter((p) => p.thesis && p.thesis.trim().length > 20)
   if (theses.length > 0) {
     const thesisSections = theses.map((p) =>
-      `### ${p.ticker} — ${p.company}\n\n${p.thesis}`
+      `### ${normTicker(p.ticker)} — ${p.company}\n\n${p.thesis}`
     ).join('\n\n')
     sections.push(`## Investment Theses\n\n${thesisSections}`)
   }
@@ -261,6 +273,122 @@ function renderPortfolioMarkdown(data: PortfolioData): string {
   if (data.watchlist && data.watchlist.length > 0) {
     const watchLines = data.watchlist.map((w) => `- ${w}`)
     sections.push(`## Watchlist & Exits\n\n${watchLines.join('\n')}`)
+  }
+
+  return sections.join('\n\n---\n\n')
+}
+
+// ── Polymarket trade report renderer ─────────────────────────────────────────
+
+interface PolymarketTrade {
+  market: string
+  category?: string
+  currentPrice: number
+  estimatedProb?: number
+  edge?: string
+  position: string
+  conviction: string
+  entryTarget?: string
+  size?: string
+  thesis?: string
+}
+
+interface PolymarketReport {
+  trades: PolymarketTrade[]
+  summary?: string
+  hedges?: string[]
+  risks?: string[]
+  watchlist?: string[]
+}
+
+/**
+ * Detect and render structured Polymarket trade report JSON.
+ * Returns markdown string if the object matches the schema, null otherwise.
+ */
+function tryRenderPolymarketReport(obj: Record<string, unknown>): string | null {
+  let data: PolymarketReport | null = null
+
+  if (Array.isArray(obj.trades) && obj.trades.length > 0) {
+    data = obj as unknown as PolymarketReport
+  } else if (typeof obj.result === 'string') {
+    const inner = tryParseJson(obj.result)
+    if (inner && Array.isArray(inner.trades) && inner.trades.length > 0) {
+      data = inner as unknown as PolymarketReport
+    }
+  }
+
+  if (!data) return null
+  return renderPolymarketMarkdown(data)
+}
+
+function renderPolymarketMarkdown(data: PolymarketReport): string {
+  const sections: string[] = []
+
+  // Summary
+  if (data.summary) {
+    sections.push(data.summary)
+  }
+
+  // Trade table (will become cards via enhanceProse since it has 5+ columns)
+  const trades = data.trades
+  const hasCategory = trades.some((t) => t.category)
+  const hasEstProb = trades.some((t) => t.estimatedProb != null)
+  const hasEdge = trades.some((t) => t.edge)
+  const hasEntry = trades.some((t) => t.entryTarget)
+  const hasSize = trades.some((t) => t.size)
+
+  let header = '| Market | Position | Price'
+  let sep = '|---|---|---'
+  if (hasEstProb) { header += ' | Est. Prob.'; sep += '|---' }
+  if (hasEdge) { header += ' | Edge'; sep += '|---' }
+  header += ' | Conviction'
+  sep += '|---'
+  if (hasCategory) { header += ' | Category'; sep += '|---' }
+  if (hasEntry) { header += ' | Entry'; sep += '|---' }
+  if (hasSize) { header += ' | Size'; sep += '|---' }
+  header += ' |'
+  sep += '|'
+
+  const rows = trades.map((t) => {
+    const price = typeof t.currentPrice === 'number' ? `$${t.currentPrice.toFixed(2)}` : String(t.currentPrice)
+    let row = `| ${t.market} | ${t.position} | ${price}`
+    if (hasEstProb) row += ` | ${t.estimatedProb != null ? `${(t.estimatedProb * 100).toFixed(0)}%` : '-'}`
+    if (hasEdge) row += ` | ${t.edge ?? '-'}`
+    row += ` | ${t.conviction}`
+    if (hasCategory) row += ` | ${t.category ?? '-'}`
+    if (hasEntry) row += ` | ${t.entryTarget ?? '-'}`
+    if (hasSize) row += ` | ${t.size ?? '-'}`
+    row += ' |'
+    return row
+  })
+
+  sections.push(`## Trade Recommendations\n\n${header}\n${sep}\n${rows.join('\n')}`)
+
+  // Per-trade theses
+  const theses = trades.filter((t) => t.thesis && t.thesis.trim().length > 20)
+  if (theses.length > 0) {
+    const thesisSections = theses.map((t) =>
+      `### ${t.market}\n\n${t.thesis}`
+    ).join('\n\n')
+    sections.push(`## Trade Theses\n\n${thesisSections}`)
+  }
+
+  // Hedges
+  if (data.hedges && data.hedges.length > 0) {
+    const hedgeLines = data.hedges.map((h) => `- ${h}`)
+    sections.push(`## Hedges\n\n${hedgeLines.join('\n')}`)
+  }
+
+  // Portfolio risks
+  if (data.risks && data.risks.length > 0) {
+    const riskLines = data.risks.map((r) => `- ${r}`)
+    sections.push(`## Portfolio Risks\n\n${riskLines.join('\n')}`)
+  }
+
+  // Watchlist
+  if (data.watchlist && data.watchlist.length > 0) {
+    const watchLines = data.watchlist.map((w) => `- ${w}`)
+    sections.push(`## Watchlist\n\n${watchLines.join('\n')}`)
   }
 
   return sections.join('\n\n---\n\n')

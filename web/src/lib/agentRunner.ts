@@ -52,6 +52,9 @@ const MAX_HISTORY_PER_AGENT = 20
 const MAX_RETRIES = 3
 const RETRY_BASE_MS = 2_000
 
+/** Max agents hitting the LLM simultaneously (prevents overwhelming providers). */
+const MAX_CONCURRENT = 3
+
 export class AgentRunner {
   private configs = new Map<string, AgentConfig>()
   private histories = new Map<string, LLMMessage[]>()
@@ -201,7 +204,15 @@ export class AgentRunner {
         this.cb.onLog(`Round ${this.round}: running ${pending.map((a) => a.name).join(', ')}`)
         this.cb.onRound?.(this.round)
 
-        await Promise.all(pending.map((a) => this.runAgentTurn(a, this.round)))
+        // Mark all pending agents as 'waiting' so the UI shows them queued
+        // (runWithConcurrency will set them to 'running' one by one)
+        for (const a of pending) {
+          coord.updateAgentStatus(a.id, 'waiting')
+          this.cb.onStatusUpdate(a.id, 'waiting')
+        }
+
+        // Run agents with concurrency limit to avoid overwhelming LLM providers
+        await this.runWithConcurrency(pending, MAX_CONCURRENT, (a) => this.runAgentTurn(a, this.round))
 
         if (this.aborted) break
 
@@ -408,6 +419,21 @@ export class AgentRunner {
 
   // ── Private helpers ──────────────────────────────────────────────────────────
 
+  /** Run tasks with a concurrency limit — at most `limit` run simultaneously. */
+  private async runWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+    const queue = [...items]
+    const running: Promise<void>[] = []
+
+    while (queue.length > 0 || running.length > 0) {
+      while (running.length < limit && queue.length > 0) {
+        const item = queue.shift()!
+        const p = fn(item).then(() => { running.splice(running.indexOf(p), 1) })
+        running.push(p)
+      }
+      if (running.length > 0) await Promise.race(running)
+    }
+  }
+
   /** Route a message through the coordinator and emit it to the UI in one call. */
   private emit(msg: Omit<Message, 'id'>): void {
     const id = coord.routeMessage(msg)
@@ -568,15 +594,18 @@ export class AgentRunner {
           }
         }
 
-        // Prompt the user once per run with the first batch of unknown names
-        if (unresolved.length > 0 && !this.promptedForAgents && this.cb.onUnknownAgent) {
-          // Show all unknown names in one prompt (just the first batch)
-          const names = unresolved.map((u) => u.cleanedName)
+        // Prompt the user once per run with the first batch of unknown names.
+        // Mark names as seen BEFORE the async await to prevent concurrent agents
+        // from triggering duplicate modals (race condition fix).
+        const trulyNew = unresolved.filter(({ cleanedName }) => !this.seenUnknownAgents.has(cleanedName.toLowerCase()))
+        for (const { cleanedName } of trulyNew) this.seenUnknownAgents.add(cleanedName.toLowerCase())
+
+        if (trulyNew.length > 0 && !this.promptedForAgents && this.cb.onUnknownAgent) {
+          const names = trulyNew.map((u) => u.cleanedName)
           this.promptedForAgents = true
           const created = await this.cb.onUnknownAgent(agent.id, names.join(', '))
           if (created) {
-            // Re-resolve — user may have created one of them
-            for (const { outMsg } of unresolved) {
+            for (const { outMsg } of trulyNew) {
               const target = this.resolveAgent(outMsg.to)
               if (target) {
                 this.emit({ fromAgent: agent.id, toAgent: target.id, content: outMsg.content, type: 'message', timestamp: Date.now(), round })
@@ -585,15 +614,12 @@ export class AgentRunner {
               }
             }
           } else {
-            for (const { outMsg } of unresolved) {
+            for (const { outMsg } of trulyNew) {
               this.rerouteToOrchestrator(agent, outMsg, round)
             }
           }
-          for (const { cleanedName } of unresolved) this.seenUnknownAgents.add(cleanedName.toLowerCase())
         } else {
-          // Already prompted or no callback — just reroute
-          for (const { outMsg, cleanedName } of unresolved) {
-            this.seenUnknownAgents.add(cleanedName.toLowerCase())
+          for (const { outMsg } of unresolved) {
             this.rerouteToOrchestrator(agent, outMsg, round)
           }
         }
@@ -620,8 +646,8 @@ export class AgentRunner {
 
         const msg = err instanceof Error ? err.message : String(err)
 
-        // Don't retry errors that will just repeat
-        const noRetry = msg.includes('loop exceeded') || msg.includes('CORS') || msg.includes('Failed to fetch')
+        // Don't retry errors that will just repeat (CORS is structural; "Failed to fetch" is often transient — rate limiting, connection pool)
+        const noRetry = msg.includes('loop exceeded') || msg.includes('CORS')
         if (attempt < MAX_RETRIES && !noRetry) {
           const delay = RETRY_BASE_MS * Math.pow(2, attempt)
           this.cb.onLog(`⚠ ${agent.name} failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}): ${msg} — retrying in ${(delay / 1000).toFixed(0)}s`)
@@ -645,7 +671,7 @@ export class AgentRunner {
   private buildSystemPrompt(agent: AgentConfig): string {
     const others = Array.from(this.configs.values())
       .filter((a) => a.id !== agent.id)
-      .map((a) => `  • ${a.id} (${a.name}) — ${a.role}`)
+      .map((a) => `  • "${a.name}" [id=${a.id}] — ${a.role}`)
       .join('\n')
 
     const hasDevTools = this.tools.some((t) => t.function.name === 'write_file')
@@ -662,8 +688,15 @@ All paths are relative to the project root.
     const searchToolSection = hasSearchTools ? `
 Web tools available:
   • web_search(query) — search the internet for current data
-  • web_fetch(url)    — fetch a web page and return its text content (works for APIs and CORS-enabled sites; if blocked, use web_search instead)
-IMPORTANT: You MUST use web_search proactively for any facts, figures, prices, dates, statistics, news, or claims that could be outdated or wrong. Never rely on training knowledge when you can verify with a live search. Call web_search early and often — multiple searches per turn are encouraged. Use web_fetch to read specific URLs from search results or known data sources. If in doubt, search.
+  • web_fetch(url)    — fetch and read a web page
+
+MANDATORY: Search before stating facts. But be EFFICIENT:
+  1. Make 1-2 targeted web_search() calls for the key data you need
+  2. Optionally web_fetch() one page if you need details from a specific URL
+  3. Then write your analysis using the data you found
+Do NOT make more than 3 tool calls per turn — search smart, not exhaustive.
+Never state a fact you did not verify via search this session.
+If web_search returns no results, say so — do not fill gaps with training data.
 ` : ''
 
     const remaining = this.settings.maxRounds - this.round
@@ -689,8 +722,8 @@ Rules:
 • Call send_message() for each agent you want to contact — you may call it multiple times
 • Call mark_done() when you have fully completed your task
 • Do NOT call mark_done() if you are still waiting for a response from another agent
-• ONLY message agents listed above — use their exact ID. Never invent agent names
-• If tools are unavailable, respond with JSON: {"analysis": "...", "messages": [{"to": "id", "content": "..."}], "done": false, "result": null}
+• ONLY message agents listed above — use their name or ID. Never invent agent names.
+• If tools are unavailable, respond with JSON: {"analysis": "...", "messages": [{"to": "Name or ID", "content": "..."}], "done": false, "result": null}
 ${agent.role === 'orchestrator' ? `
 ORCHESTRATOR INSTRUCTIONS — You are the team lead. You must NOT do all the work yourself.
 • On your FIRST turn, decompose the task and call send_message() for each worker with their assignment
@@ -721,8 +754,13 @@ WORKER INSTRUCTIONS — You can collaborate directly with other workers listed a
 CRITICAL OUTPUT RULE: Always produce CONCRETE, SPECIFIC output — real data, names, numbers, lists, calculations.
 Never describe what you "would do" or outline steps. Actually DO the work and report the results.
 Bad: "Set up a scan with criteria and select top tickers"
-Good: "Top 10 by market cap: AAPL ($3.1T, 8.2%), MSFT ($2.9T, 7.8%), ..."` : ''}
-${roundBudget}`
+Good: "Top 10 by market cap: $AAPL ($3.1T, 8.2%), $MSFT ($2.9T, 7.8%), ..."` : ''}
+${roundBudget}${agent.systemPrompt.includes('$ prefix') ? `
+
+OUTPUT FORMAT REMINDER — MANDATORY:
+Every stock or company ticker MUST have a $ prefix: $AAPL, $MSFT, $NVDA, $GOOG.
+First mention: "Company Name ($TICKER)". After that: $TICKER alone.
+NEVER write a bare ticker without $. This is required for rendering.` : ''}`
   }
 
   private parseResponse(raw: string): AgentResponse {

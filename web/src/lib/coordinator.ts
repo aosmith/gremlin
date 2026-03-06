@@ -87,6 +87,10 @@ export function clearSession(): void {
   }
 }
 
+export function getRunning(): boolean {
+  return isRunning
+}
+
 export function setRunning(running: boolean): void {
   isRunning = running
 }

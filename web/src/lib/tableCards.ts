@@ -123,13 +123,24 @@ function addSectionSpacing(html: string): string {
 }
 
 /**
- * Highlight $TICKER symbols in rendered HTML.
- * Agents are instructed to always use the $ prefix, so we only match that pattern.
+ * Highlight ticker symbols in rendered HTML.
+ * Matches:
+ *  - $TICKER (primary format, agents instructed to use this)
+ *  - (TICKER) — common fallback when models skip the $
+ *  - TICKER: at start of card titles after tablesToCards conversion
  */
 function highlightTickers(html: string): string {
   return html.replace(/>([^<]+)</g, (_full, text: string) => {
-    const highlighted = text.replace(/\$([A-Z]{1,5})\b/g, (_m, t: string) =>
-      `<span class="ticker">$${t}</span>`)
+    const highlighted = text
+      // Primary: $TICKER
+      .replace(/\$([A-Z]{1,5})\b/g, (_m, t: string) =>
+        `<span class="ticker">$${t}</span>`)
+      // Fallback: (TICKER) — bare ticker in parentheses (very common LLM pattern)
+      .replace(/\(([A-Z]{1,5})\)/g, (_m, t: string) => {
+        // Skip if already styled (would have $ prefix)
+        if (_m.includes('class="ticker"')) return _m
+        return `(<span class="ticker">$${t}</span>)`
+      })
     return `>${highlighted}<`
   })
 }

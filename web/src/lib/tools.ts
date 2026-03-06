@@ -7,11 +7,12 @@
 import { projectFS } from './filesystem'
 import { performWebSearch } from './search'
 import { proxiedFetch } from './api'
+import { extractContent, renderPage } from './headless'
 import type { Settings } from './types'
 
 // ── OpenAI-format tool definitions ────────────────────────────────────────────
 
-export interface OAIToolParam {
+interface OAIToolParam {
   type: string
   description: string
   enum?: string[]
@@ -190,7 +191,14 @@ export interface ToolCallRecord {
 }
 
 /** Callback invoked when an agent calls web_search but no provider is configured. */
-export type OnSearchNotConfigured = () => Promise<boolean>
+type OnSearchNotConfigured = () => Promise<boolean>
+
+/** Combine an optional parent abort signal with a per-call timeout. */
+function withTimeout(signal?: AbortSignal, ms = 30_000): AbortSignal {
+  const timeout = AbortSignal.timeout(ms)
+  if (!signal) return timeout
+  return AbortSignal.any([signal, timeout])
+}
 
 export async function executeTool(
   id: string,
@@ -234,12 +242,12 @@ export async function executeTool(
             throw new Error('Web search not configured. Set a search provider in Settings.')
           }
         }
-        result = await performWebSearch(query, settings!, signal)
+        result = await performWebSearch(query, settings!, withTimeout(signal, 30_000))
         break
       }
       case 'web_fetch': {
         const { url } = args as { url: string }
-        result = await fetchWebPage(url, settings, signal)
+        result = await fetchWebPage(url, settings, withTimeout(signal, 30_000))
         break
       }
       default:
@@ -252,6 +260,10 @@ export async function executeTool(
     if (err instanceof TypeError && (result.includes('Failed to fetch') || result.includes('NetworkError'))) {
       result = `CORS/network error: ${result}. This tool cannot reach the external service from the browser. A CORS proxy is required in Settings, or use a different search provider. Do NOT retry this call — it will fail again.`
     }
+    // Timeout errors — tell the LLM the call timed out, don't retry
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      result = `Request timed out after 30 seconds. The service is too slow or unreachable. Do NOT retry — move on with what you have.`
+    }
     return { id, name, args, result, isError: true }
   }
 }
@@ -260,25 +272,8 @@ export async function executeTool(
 
 const MAX_FETCH_CHARS = 30_000
 
-/** Strip HTML tags and collapse whitespace to extract readable text. */
-function htmlToText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<nav[\s\S]*?<\/nav>/gi, '')
-    .replace(/<footer[\s\S]*?<\/footer>/gi, '')
-    .replace(/<header[\s\S]*?<\/header>/gi, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s{2,}/g, ' ')
-    .replace(/\n\s*\n/g, '\n')
-    .trim()
-}
+/** Minimum content length before trying the iframe JS renderer as SPA fallback. */
+const SPA_THRESHOLD = 200
 
 async function fetchWebPage(url: string, settings?: Settings, signal?: AbortSignal): Promise<string> {
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
@@ -304,7 +299,17 @@ async function fetchWebPage(url: string, settings?: Settings, signal?: AbortSign
     return raw.length > MAX_FETCH_CHARS ? raw.slice(0, MAX_FETCH_CHARS) + '\n...(truncated)' : raw
   }
 
-  // HTML: strip to text
-  const text = htmlToText(raw)
+  // HTML: extract structured Markdown via headless DOMParser
+  let text = extractContent(raw, url)
+
+  // SPA fallback: if DOMParser yielded very little text but the page had scripts,
+  // render in a sandboxed iframe to let JS populate the content.
+  if (text.length < SPA_THRESHOLD && /<script[\s>]/i.test(raw)) {
+    try {
+      const rendered = await renderPage(raw, url)
+      if (rendered.length > text.length) text = rendered
+    } catch { /* iframe fallback is best-effort */ }
+  }
+
   return text.length > MAX_FETCH_CHARS ? text.slice(0, MAX_FETCH_CHARS) + '\n...(truncated)' : text
 }

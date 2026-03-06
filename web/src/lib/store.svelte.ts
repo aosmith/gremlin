@@ -2,10 +2,11 @@ import { defaultAgents, agentsForMode, BUILTIN_MODES } from './types'
 import type { AgentConfig, AgentState, AppMode, Attachment, CustomMode, Message, ModeInfo, Settings } from './types'
 import { DEFAULT_SETTINGS } from './types'
 import { AgentRunner } from './agentRunner'
+import type { RunnerCallbacks } from './agentRunner'
 import { unloadOllamaModels } from './api'
 import { projectFS } from './filesystem'
 import { DEV_TOOLS, SEARCH_TOOLS } from './tools'
-import { isWebGPUAvailable, getLoadedModel } from './webllm'
+import { isWebGPUAvailable } from './webllm'
 import type { WebLLMProgress } from './webllm'
 import * as coord from './coordinator'
 
@@ -27,7 +28,12 @@ function lsDel(key: string) {
   try { localStorage.removeItem(key) } catch { /* ignore */ }
 }
 
-function loadSettings(): Settings  { return { ...DEFAULT_SETTINGS, ...ls('gremlin_settings', DEFAULT_SETTINGS) } }
+function loadSettings(): Settings  {
+  const s = { ...DEFAULT_SETTINGS, ...ls('gremlin_settings', DEFAULT_SETTINGS) }
+  // Migrate: empty proxyUrl → built-in dev proxy
+  if (!s.proxyUrl) s.proxyUrl = DEFAULT_SETTINGS.proxyUrl
+  return s
+}
 function saveSettings(s: Settings) { lsSet('gremlin_settings', s) }
 
 function loadMode(): AppMode  { return ls<AppMode>('gremlin_mode', 'general') }
@@ -36,31 +42,40 @@ function saveMode(m: AppMode) { lsSet('gremlin_mode', m) }
 // ── Builtin preset versioning ────────────────────────────────────────────────
 // Bump this whenever builtin mode agents are updated. On load, new agents that
 // don't exist in the user's saved config are merged in — but user edits are preserved.
-const BUILTIN_AGENTS_VERSION = 8
+const BUILTIN_AGENTS_VERSION = 9
 const VERSION_KEY = 'gremlin_builtin_agents_version'
 
 function migrateBuiltinAgents() {
   const stored = ls(VERSION_KEY, 0)
   if (stored >= BUILTIN_AGENTS_VERSION) return
 
-  // Merge new agents into saved configs instead of wiping user customizations
   for (const mode of BUILTIN_MODES) {
     const key = `gremlin_agents_${mode.id}`
     const saved: AgentConfig[] | null = ls(key, null as any)
     if (!saved) continue  // no saved config — will use defaults naturally
 
     const defaults = agentsForMode(mode.id)
+    const defaultMap = new Map(defaults.map((a) => [a.id, a]))
     const savedIds = new Set(saved.map((a) => a.id))
 
+    // Update systemPrompt for existing agents from code defaults
+    let changed = false
+    for (const agent of saved) {
+      const def = defaultMap.get(agent.id)
+      if (def && agent.systemPrompt !== def.systemPrompt) {
+        agent.systemPrompt = def.systemPrompt
+        changed = true
+      }
+    }
+
     // Add any new agents from defaults that the user doesn't already have
-    let merged = false
     for (const defaultAgent of defaults) {
       if (!savedIds.has(defaultAgent.id)) {
         saved.push(defaultAgent)
-        merged = true
+        changed = true
       }
     }
-    if (merged) lsSet(key, saved)
+    if (changed) lsSet(key, saved)
   }
 
   lsSet(VERSION_KEY, BUILTIN_AGENTS_VERSION)
@@ -162,12 +177,6 @@ function saveArchivedSession(id: string, session: ArchivedSession) {
 function deleteArchivedSession(id: string) {
   lsDel(`gremlin_session_${id}`)
 }
-
-// ── Output formatting (exported for render-time use in App.svelte) ───────────
-
-// ── Limits ───────────────────────────────────────────────────────────────────
-
-// No artificial limits — this is a local application
 
 // ── Store ─────────────────────────────────────────────────────────────────────
 
@@ -533,15 +542,26 @@ class GremlinStore {
 
   // ── Session ───────────────────────────────────────────────────────────────
 
-  /** Initialize coordinator from restored session state (page load). */
+  /** Initialize coordinator from restored session state (page load / HMR). */
   initSession() {
+    // If the coordinator is mid-run (HMR during an active run), don't clear it —
+    // the runner is still alive and updating coordinator state.
+    // Instead, just sync the store from the coordinator's live state.
+    if (coord.getRunning()) {
+      this.isRunning = true
+      this.syncAgentStates()
+      return
+    }
+
     coord.clearSession()
     for (const cfg of this.agentConfigs) coord.addAgent(cfg)
-    // If we have a restored session, sync agent states but keep messages/logs/output intact
+    // Restore from persisted session — clamp stale running/waiting → idle
     if (this.messages.length > 0 || this.output) {
       this.agentStates = this.agentConfigs.map((cfg) => {
         const restored = this._session.agentStates.find((a) => a.id === cfg.id)
-        return restored ?? { ...cfg, status: 'idle' as const, messageCount: 0, unreadCount: 0 }
+        if (!restored) return { ...cfg, status: 'idle' as const, messageCount: 0, unreadCount: 0 }
+        const status = restored.status === 'running' || restored.status === 'waiting' ? 'idle' as const : restored.status
+        return { ...restored, status }
       })
     } else {
       this.agentStates = this.agentConfigs.map((cfg) => ({
@@ -585,13 +605,6 @@ class GremlinStore {
 
   private setOutput(output: string) {
     this.output = output
-    this.saveSession()
-  }
-
-  private updateAgentState(agentId: string, patch: Partial<AgentState>) {
-    this.agentStates = this.agentStates.map((a) =>
-      a.id === agentId ? { ...a, ...patch } : a
-    )
     this.saveSession()
   }
 
@@ -642,70 +655,7 @@ class GremlinStore {
     ]
 
     try {
-      await this.runner.run(this.task, this.agentConfigs, this.settings, this.attachments, {
-        onMessage: (msg) => {
-          this.addMessage(msg)
-          this.syncAgentStates()
-        },
-        onStatusUpdate: (agentId, status) => {
-          this.updateAgentState(agentId, { status })
-        },
-        onRound: (round) => {
-          this.currentRound = round
-        },
-        onLog: (text) => {
-          this.addLog(text)
-        },
-        onOutput: (output) => {
-          this.setOutput(output)
-        },
-        onToolCall: (e) => {
-          if (e.record.name === 'write_file' && !e.record.isError) {
-            const path = e.record.args.path as string
-            if (path && !this.writtenFiles.includes(path)) {
-              this.writtenFiles = [...this.writtenFiles, path].sort()
-            }
-          }
-        },
-        onUnknownAgent: (_fromAgent, name) => {
-          return new Promise<boolean>((resolve) => {
-            this.pendingAgentSuggestion = { name, resolve }
-          })
-        },
-        onSearchNotConfigured: () => {
-          return new Promise<boolean>((resolve) => {
-            this.pendingSearchSetup = { resolve }
-          })
-        },
-        onRoundsExhausted: (currentRound, maxRounds) => {
-          return new Promise((resolve) => {
-            this.pendingRoundsExhausted = { currentRound, maxRounds, resolve }
-          })
-        },
-        onStream: (agentId, _delta, accumulated) => {
-          if (agentId === null) {
-            this.streamingAgentId = null
-            this.streamingText = ''
-          } else {
-            this.streamingAgentId = agentId
-            this.streamingText = accumulated
-          }
-        },
-        onProgress: (p) => {
-          this.webllmProgress = p
-        },
-        onDone: () => {
-          this.isRunning      = false
-          this.webllmProgress = null
-          this.streamingAgentId = null
-          this.streamingText    = ''
-          this.syncAgentStates()
-          this.finalizeAgentStates()
-          this.flushSession()
-          this.archiveCurrentSession()
-          this.releaseModels()
-        },
-      }, tools)
+      await this.runner.run(this.task, this.agentConfigs, this.settings, this.attachments, this.makeCallbacks(), tools)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.addLog(`✖ Fatal: ${msg}`)
@@ -722,7 +672,8 @@ class GremlinStore {
     this.streamingAgentId = null
     this.streamingText = ''
     coord.setRunning(false)
-    // Reassign full array for reactivity
+    // Sync from coordinator then force remaining active agents to idle
+    this.syncAgentStates()
     this.agentStates = this.agentStates.map((a) =>
       a.status !== 'idle' && a.status !== 'done'
         ? { ...a, status: 'idle' as const }
@@ -784,70 +735,7 @@ class GremlinStore {
     ]
 
     try {
-      await this.runner.run(this.task, this.agentConfigs, this.settings, this.attachments, {
-        onMessage: (msg) => {
-          this.addMessage(msg)
-          this.syncAgentStates()
-        },
-        onStatusUpdate: (agentId, status) => {
-          this.updateAgentState(agentId, { status })
-        },
-        onRound: (round) => {
-          this.currentRound = round
-        },
-        onLog: (text) => {
-          this.addLog(text)
-        },
-        onOutput: (output) => {
-          this.setOutput(output)
-        },
-        onToolCall: (e) => {
-          if (e.record.name === 'write_file' && !e.record.isError) {
-            const path = e.record.args.path as string
-            if (path && !this.writtenFiles.includes(path)) {
-              this.writtenFiles = [...this.writtenFiles, path].sort()
-            }
-          }
-        },
-        onUnknownAgent: (_fromAgent, name) => {
-          return new Promise<boolean>((resolve) => {
-            this.pendingAgentSuggestion = { name, resolve }
-          })
-        },
-        onSearchNotConfigured: () => {
-          return new Promise<boolean>((resolve) => {
-            this.pendingSearchSetup = { resolve }
-          })
-        },
-        onRoundsExhausted: (currentRound, maxRounds) => {
-          return new Promise((resolve) => {
-            this.pendingRoundsExhausted = { currentRound, maxRounds, resolve }
-          })
-        },
-        onStream: (agentId, _delta, accumulated) => {
-          if (agentId === null) {
-            this.streamingAgentId = null
-            this.streamingText = ''
-          } else {
-            this.streamingAgentId = agentId
-            this.streamingText = accumulated
-          }
-        },
-        onProgress: (p) => {
-          this.webllmProgress = p
-        },
-        onDone: () => {
-          this.isRunning      = false
-          this.webllmProgress = null
-          this.streamingAgentId = null
-          this.streamingText    = ''
-          this.syncAgentStates()
-          this.finalizeAgentStates()
-          this.flushSession()
-          this.archiveCurrentSession()
-          this.releaseModels()
-        },
-      }, tools)
+      await this.runner.run(this.task, this.agentConfigs, this.settings, this.attachments, this.makeCallbacks(), tools)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.addLog(`✖ Fatal: ${msg}`)
@@ -860,15 +748,87 @@ class GremlinStore {
   retryAgent(agentId: string) {
     if (!this.runner) return
     this.isRunning = true
-    this.updateAgentState(agentId, { status: 'waiting' })
+    // retryAgent sets coordinator status to 'waiting' internally, then syncAgentStates pulls it
     this.runner.retryAgent(agentId)
+    this.syncAgentStates()
+  }
+
+  private makeCallbacks(): RunnerCallbacks {
+    return {
+      onMessage: (msg) => {
+        this.addMessage(msg)
+        this.syncAgentStates()
+      },
+      onStatusUpdate: () => {
+        this.syncAgentStates()
+        this.saveSession()
+      },
+      onRound: (round) => {
+        this.currentRound = round
+      },
+      onLog: (text) => {
+        this.addLog(text)
+      },
+      onOutput: (output) => {
+        this.setOutput(output)
+      },
+      onToolCall: (e) => {
+        if (e.record.name === 'write_file' && !e.record.isError) {
+          const path = e.record.args.path as string
+          if (path && !this.writtenFiles.includes(path)) {
+            this.writtenFiles = [...this.writtenFiles, path].sort()
+          }
+        }
+      },
+      onUnknownAgent: (_fromAgent, name) => {
+        return new Promise<boolean>((resolve) => {
+          this.pendingAgentSuggestion = { name, resolve }
+        })
+      },
+      onSearchNotConfigured: () => {
+        return new Promise<boolean>((resolve) => {
+          this.pendingSearchSetup = { resolve }
+        })
+      },
+      onRoundsExhausted: (currentRound, maxRounds) => {
+        return new Promise((resolve) => {
+          this.pendingRoundsExhausted = { currentRound, maxRounds, resolve }
+        })
+      },
+      onStream: (agentId, _delta, accumulated) => {
+        if (agentId === null) {
+          this.streamingAgentId = null
+          this.streamingText = ''
+        } else {
+          this.streamingAgentId = agentId
+          this.streamingText = accumulated
+        }
+      },
+      onProgress: (p) => {
+        this.webllmProgress = p
+      },
+      onDone: () => {
+        this.isRunning      = false
+        this.webllmProgress = null
+        this.streamingAgentId = null
+        this.streamingText    = ''
+        this.syncAgentStates()
+        this.finalizeAgentStates()
+        this.flushSession()
+        this.archiveCurrentSession()
+        this.releaseModels()
+      },
+    }
   }
 
   private syncAgentStates() {
     const coordAgents = coord.getAgents()
     this.agentStates = this.agentStates.map((a) => {
       const ca = coordAgents.find((c) => c.id === a.id)
-      return ca ? { ...a, messageCount: ca.messageCount, unreadCount: ca.unreadCount } : a
+      if (!ca) return a
+      // Coordinator is the single source of truth for status, messageCount, unreadCount.
+      // This avoids dual-update races between onStatusUpdate and onMessage callbacks.
+      return { ...a, status: ca.status, messageCount: ca.messageCount, unreadCount: ca.unreadCount }
     })
   }
 
