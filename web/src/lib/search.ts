@@ -96,7 +96,7 @@ async function searchDuckDuckGo(query: string, settings: Settings, signal?: Abor
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
   const resp = await proxiedFetch(url, {
     method: 'GET',
-    headers: { 'Accept': 'text/html' },
+    headers: { 'Accept': 'text/html', 'User-Agent': 'Mozilla/5.0 (compatible; GREMLIN/1.0)' },
     signal,
   }, settings)
   if (!resp.ok) throw new Error(`DuckDuckGo search failed: ${resp.status}`)

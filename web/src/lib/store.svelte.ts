@@ -31,7 +31,7 @@ function lsDel(key: string) {
 function loadSettings(): Settings  {
   const s = { ...DEFAULT_SETTINGS, ...ls('gremlin_settings', DEFAULT_SETTINGS) }
   // Migrate: empty proxyUrl → built-in dev proxy
-  if (!s.proxyUrl) s.proxyUrl = DEFAULT_SETTINGS.proxyUrl
+  if (!s.proxyUrl?.trim()) s.proxyUrl = DEFAULT_SETTINGS.proxyUrl
   return s
 }
 function saveSettings(s: Settings) { lsSet('gremlin_settings', s) }
@@ -42,7 +42,7 @@ function saveMode(m: AppMode) { lsSet('gremlin_mode', m) }
 // ── Builtin preset versioning ────────────────────────────────────────────────
 // Bump this whenever builtin mode agents are updated. On load, new agents that
 // don't exist in the user's saved config are merged in — but user edits are preserved.
-const BUILTIN_AGENTS_VERSION = 9
+const BUILTIN_AGENTS_VERSION = 12
 const VERSION_KEY = 'gremlin_builtin_agents_version'
 
 function migrateBuiltinAgents() {
@@ -247,6 +247,21 @@ class GremlinStore {
 
   runner: AgentRunner | null = null
   private saveTimer: ReturnType<typeof setTimeout> | null = null
+
+  // ── Sleep/wake detector ────────────────────────────────────────────────
+  // A heartbeat interval fires every 5s. If the gap between ticks exceeds
+  // 15s the machine was likely asleep — abort any stale run since TCP
+  // connections to Ollama (or any provider) will be dead.
+  private _lastTick = Date.now()
+  private _sleepDetector = setInterval(() => {
+    const now = Date.now()
+    const gap = now - this._lastTick
+    this._lastTick = now
+    if (gap > 15_000 && this.isRunning) {
+      this.addLog('Machine woke from sleep — aborting stale run')
+      this.stopRun()
+    }
+  }, 5_000)
 
   // ── Session save helper (debounced — one write per second max) ─────────
   private saveSession() {
@@ -680,6 +695,7 @@ class GremlinStore {
         : a
     )
     this.flushSession()
+    // Release models immediately to cancel any in-flight Ollama generation
     this.releaseModels()
   }
 

@@ -13,6 +13,7 @@ function corsProxy(): Plugin {
     name: 'cors-proxy',
     configureServer(server) {
       server.middlewares.use('/cors-proxy', async (req, res) => {
+        console.log(`[cors-proxy] ${req.method} → ${req.headers['x-target-url'] ?? '(no target)'}`)
         if (req.method === 'OPTIONS') {
           res.writeHead(204, {
             'Access-Control-Allow-Origin': '*',

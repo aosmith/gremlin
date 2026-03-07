@@ -208,15 +208,19 @@ async function streamAnthropicResponse(
 export function proxiedFetch(url: string, init: RequestInit, settings: Settings): Promise<Response> {
   if (!needsProxy(url)) return fetch(url, init)
 
-  // Use configured proxy, or fall back to built-in Vite dev server proxy
-  const proxyUrl = settings.proxyUrl || '/cors-proxy'
+  // Resolve proxy URL — ensure it's absolute
+  let proxyUrl = settings.proxyUrl?.trim() || '/cors-proxy'
+  if (proxyUrl.startsWith('/')) proxyUrl = `${window.location.origin}${proxyUrl}`
+  proxyUrl = proxyUrl.replace(/\/$/, '')
 
   const headers = new Headers(init.headers)
   headers.set('X-Target-URL', url)
 
-  return fetch(proxyUrl.replace(/\/$/, ''), {
+  return fetch(proxyUrl, {
     ...init,
     headers,
+  }).catch((err) => {
+    throw new TypeError(`${err.message} [proxy=${proxyUrl}, target=${url}]`)
   })
 }
 
@@ -228,8 +232,6 @@ const SKIP_PROXY = new Set([
   'openrouter.ai',
   'generativelanguage.googleapis.com',
   'api.together.xyz',
-  'google.serper.dev',
-  'api.tavily.com',
 ])
 
 function needsProxy(url: string): boolean {
@@ -327,6 +329,7 @@ async function callOpenAIWithTools(
   // Disable streaming for local Ollama — SSE parsing can hang and local latency is minimal
   const isLocalOllama = settings.apiEndpoint.includes('localhost:11434') || settings.apiEndpoint.includes('127.0.0.1:11434')
   for (let round = 0; round < 4; round++) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     let resp: Response
     const useStream = !!onStream && !isLocalOllama
     try {
@@ -382,12 +385,6 @@ async function callOpenAIWithTools(
   throw new Error('Tool-call loop exceeded max rounds')
 }
 
-/** Combine an optional parent abort signal with a per-call timeout. */
-function llmSignal(signal?: AbortSignal): AbortSignal {
-  const timeout = AbortSignal.timeout(90_000)
-  if (!signal) return timeout
-  return AbortSignal.any([signal, timeout])
-}
 
 function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[], signal?: AbortSignal, stream = false) {
   const headers: Record<string, string> = { 'content-type': 'application/json' }
@@ -408,7 +405,7 @@ function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[], si
     body.tool_choice = 'auto'
   }
 
-  return proxiedFetch(settings.apiEndpoint, { method: 'POST', headers, body: JSON.stringify(body), signal: llmSignal(signal) }, settings)
+  return proxiedFetch(settings.apiEndpoint, { method: 'POST', headers, body: JSON.stringify(body), signal }, settings)
     .then((r) => {
       if (!r.ok) return r.text().then((t) => {
         // Ollama returns a plain error object when the model isn't installed
@@ -458,6 +455,7 @@ async function callAnthropicWithTools(
   const msgs: AMsg[] = messages.map((m) => ({ role: m.role, content: toAnthropicContent(m) }))
 
   for (let round = 0; round < 4; round++) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     const useStream = !!onStream
     const resp = await anthropicFetch(settings, system, msgs, tools, signal, useStream)
 
@@ -528,7 +526,7 @@ function anthropicFetch(
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify(body),
-    signal: llmSignal(signal),
+    signal,
   }, settings).then((r) => {
     if (!r.ok) return r.text().then((t) => { throw new Error(`Anthropic ${r.status}: ${t}`) })
     return r

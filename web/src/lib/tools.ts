@@ -193,13 +193,6 @@ export interface ToolCallRecord {
 /** Callback invoked when an agent calls web_search but no provider is configured. */
 type OnSearchNotConfigured = () => Promise<boolean>
 
-/** Combine an optional parent abort signal with a per-call timeout. */
-function withTimeout(signal?: AbortSignal, ms = 30_000): AbortSignal {
-  const timeout = AbortSignal.timeout(ms)
-  if (!signal) return timeout
-  return AbortSignal.any([signal, timeout])
-}
-
 export async function executeTool(
   id: string,
   name: string,
@@ -242,12 +235,12 @@ export async function executeTool(
             throw new Error('Web search not configured. Set a search provider in Settings.')
           }
         }
-        result = await performWebSearch(query, settings!, withTimeout(signal, 30_000))
+        result = await performWebSearch(query, settings!, signal)
         break
       }
       case 'web_fetch': {
         const { url } = args as { url: string }
-        result = await fetchWebPage(url, settings, withTimeout(signal, 30_000))
+        result = await fetchWebPage(url, settings, signal)
         break
       }
       default:
@@ -255,14 +248,14 @@ export async function executeTool(
     }
     return { id, name, args, result, isError: false }
   } catch (err) {
+    // Rethrow abort errors so the caller can stop immediately
+    if (err instanceof DOMException && err.name === 'AbortError') throw err
+    if (err instanceof Error && err.name === 'AbortError') throw err
+
     let result = err instanceof Error ? err.message : String(err)
     // CORS / network errors from browser — tell the LLM to stop retrying
     if (err instanceof TypeError && (result.includes('Failed to fetch') || result.includes('NetworkError'))) {
       result = `CORS/network error: ${result}. This tool cannot reach the external service from the browser. A CORS proxy is required in Settings, or use a different search provider. Do NOT retry this call — it will fail again.`
-    }
-    // Timeout errors — tell the LLM the call timed out, don't retry
-    if (err instanceof DOMException && err.name === 'TimeoutError') {
-      result = `Request timed out after 30 seconds. The service is too slow or unreachable. Do NOT retry — move on with what you have.`
     }
     return { id, name, args, result, isError: true }
   }

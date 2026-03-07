@@ -424,8 +424,8 @@ export class AgentRunner {
     const queue = [...items]
     const running: Promise<void>[] = []
 
-    while (queue.length > 0 || running.length > 0) {
-      while (running.length < limit && queue.length > 0) {
+    while ((queue.length > 0 || running.length > 0) && !this.aborted) {
+      while (running.length < limit && queue.length > 0 && !this.aborted) {
         const item = queue.shift()!
         const p = fn(item).then(() => { running.splice(running.indexOf(p), 1) })
         running.push(p)
@@ -702,9 +702,15 @@ If web_search returns no results, say so — do not fill gaps with training data
     const remaining = this.settings.maxRounds - this.round
     const roundBudget = `\n\nROUND BUDGET: This is round ${this.round} of ${this.settings.maxRounds}. ${remaining <= 2 ? 'TIME IS ALMOST UP — wrap up and call mark_done() NOW.' : `You have ${remaining} rounds remaining. Be efficient.`}`
 
+    const now = new Date()
+    const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+
     return `${agent.systemPrompt}
 ${devToolSection}${searchToolSection}
 ---
+TODAY'S DATE: ${dateStr}
+All analysis must be FORWARD-LOOKING. NEVER state facts, figures, or data from memory — only use data you found via web search this session. If web search fails or returns no results, explicitly say the data is unavailable. Do NOT fill gaps with training data.
+
 You are operating inside GREMLIN, a multi-agent coordination system.
 Your agent ID : ${agent.id}
 Your name     : ${agent.name}
@@ -716,7 +722,9 @@ COMMUNICATION — Use the provided tool functions:
   • send_message(to, content) — send a message to another agent (use their ID or name)
   • mark_done(result?)        — signal you have completed your task; optionally include a final result string
 
-Your text/prose output is your analysis and reasoning. Actions (messaging, finishing) are done via tool calls.
+Your text/prose output is your analysis — it is displayed to humans with full Markdown rendering.
+Use rich Markdown: ## headers, **bold**, tables, bullet points. Make it scannable and professional.
+Actions (messaging, finishing) are done via tool calls.
 
 Rules:
 • Call send_message() for each agent you want to contact — you may call it multiple times
@@ -743,6 +751,12 @@ CRITICAL: You MUST include every concrete data point the workers provided. If wo
 If workers provided numbers, include ALL numbers. Never replace specific data with vague summaries.
 Do NOT say "based on the analysis" or "as discussed" — include the ACTUAL data inline.
 Do NOT summarise briefly — the user wants depth. Aim for a complete, detailed report.
+
+QUALITY GATE — If worker data is INSUFFICIENT for a high-quality report:
+• Send messages back to specific workers requesting the missing data (e.g. "Need current P/E and price for $AAPL — please web_fetch Finviz")
+• Do NOT call mark_done() yet — wait for the additional data
+• Only produce your final report when you have enough concrete data to fill every field
+• It is BETTER to request another round of data than to produce a weak report with gaps
 ` : ''}
 ${agent.role === 'worker' || agent.role === 'custom' ? `
 WORKER INSTRUCTIONS — You can collaborate directly with other workers listed above.
@@ -751,6 +765,27 @@ WORKER INSTRUCTIONS — You can collaborate directly with other workers listed a
 • Only call mark_done() when YOUR work is fully complete and you are NOT waiting on any peer response.
 • Keep peer exchanges focused — one or two rounds of back-and-forth at most.
 • Do NOT message peers just to be polite — only when it adds concrete value (shared data, dependency, contradiction).
+
+OUTPUT FORMAT:
+Your "analysis" text is displayed to humans in the Activity Monitor with full Markdown rendering.
+Format it as RICH MARKDOWN — use headers (##), bold, tables, and bullet points for readability.
+Structure every response with clear sections. Example:
+
+## Key Findings
+| Metric | Value |
+|--------|-------|
+| P/E    | 22.5  |
+...
+
+## Analysis
+...
+
+When sending data to OTHER AGENTS via send_message(), include structured data so they can parse it easily.
+For financial data, include a JSON block in your message:
+\`\`\`json
+{"tickers": [{"symbol": "$AAPL", "price": 185.23, "pe": 29.1, ...}]}
+\`\`\`
+
 CRITICAL OUTPUT RULE: Always produce CONCRETE, SPECIFIC output — real data, names, numbers, lists, calculations.
 Never describe what you "would do" or outline steps. Actually DO the work and report the results.
 Bad: "Set up a scan with criteria and select top tickers"
