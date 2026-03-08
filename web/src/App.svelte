@@ -16,6 +16,7 @@
   import HelpModal from './components/HelpModal.svelte'
   import { formatOutputAsMarkdown, cleanOutputForCopy } from './lib/cleanContent'
   import { enhanceProse } from './lib/tableCards'
+  import { sanitizeHtml } from './lib/sanitize'
 
   // Configure marked for safe output
   marked.setOptions({ breaks: true, gfm: true })
@@ -48,7 +49,7 @@
 
   // Final output rendering (shown inline in Activity Monitor)
   const outputHtml = $derived(store.output
-    ? enhanceProse(marked.parse(formatOutputAsMarkdown(store.output)) as string)
+    ? sanitizeHtml(enhanceProse(marked.parse(formatOutputAsMarkdown(store.output)) as string))
     : ''
   )
 
@@ -68,6 +69,9 @@
       store.startRun()
     }
   }
+
+  // Session import
+  let importInput: HTMLInputElement | undefined = $state()
 
   // Image attach
   let fileInput: HTMLInputElement | undefined = $state()
@@ -309,6 +313,7 @@
               class="ghost icon btn-attach"
               onclick={() => fileInput?.click()}
               title="Attach images (or drag & drop / paste)"
+              aria-label="Attach images"
             >📎</button>
             <input
               bind:this={fileInput}
@@ -333,7 +338,7 @@
               {#each store.attachments as att, i}
                 <div class="attachment-thumb">
                   <img src="data:{att.mimeType};base64,{att.base64}" alt={att.name ?? 'attachment'} />
-                  <button class="ghost icon thumb-remove" onclick={() => store.removeAttachment(i)}>✕</button>
+                  <button class="ghost icon thumb-remove" onclick={() => store.removeAttachment(i)} aria-label="Remove attachment">✕</button>
                 </div>
               {/each}
             </div>
@@ -369,23 +374,51 @@
           disabled={store.isRunning}
           title="Clear session"
         >↺ Clear</button>
+        {#if store.messages.length > 0 && !store.isRunning}
+          <button
+            class="ghost btn-sm"
+            onclick={() => store.exportSession()}
+            title="Export session as JSON"
+            aria-label="Export session"
+          >Export</button>
+        {/if}
+        <button
+          class="ghost btn-sm"
+          onclick={() => importInput?.click()}
+          title="Import a saved session"
+          aria-label="Import session"
+        >Import</button>
+        <input
+          bind:this={importInput}
+          type="file"
+          accept=".json"
+          style="display:none"
+          onchange={async (e) => {
+            const file = (e.target as HTMLInputElement).files?.[0]
+            if (file) await store.importSession(file)
+            ;(e.target as HTMLInputElement).value = ''
+          }}
+        />
         <button
           class="ghost icon btn-settings"
           onclick={() => (showHistory = true)}
           title="Session history"
+          aria-label="Session history"
         >🕐</button>
         <button
           class="ghost icon btn-settings"
           onclick={() => (showHelp = true)}
           title="Help"
+          aria-label="Help"
         >?</button>
         <button
           class="ghost icon btn-settings"
           onclick={() => (store.showSettings = true)}
           title="Settings"
+          aria-label="Settings"
         >⚙</button>
         {#if store.isRunning}
-          <button class="danger" onclick={() => store.stopRun()}>⏹ Stop</button>
+          <button class="danger" onclick={() => store.stopRun()} aria-label="Stop run">⏹ Stop</button>
         {:else}
           <button
             class="primary run-btn"
@@ -471,6 +504,7 @@
           onclick={() => (store.showAgentEdit = '__new__')}
           disabled={store.isRunning}
           title="Add agent"
+          aria-label="Add agent"
         >＋</button>
       </div>
 
@@ -547,6 +581,7 @@
         isRunning={store.isRunning}
         onCopy={copyOutput}
         onReply={handleReply}
+        onRetry={(agentId) => store.retryAgent(agentId)}
       />
     </div>
 

@@ -76,11 +76,24 @@ export class AgentRunner {
   private sentContent = new Map<string, string[]>()
   /** Attachments from the user (images, etc.) — injected into each agent's first turn. */
   private taskAttachments: Attachment[] = []
+  /** Cumulative LLM latency per agent (ms). */
+  private agentLatency = new Map<string, number>()
+  /** LLM turn count per agent. */
+  private agentTurns = new Map<string, number>()
 
   abort() {
     this.aborted = true
     this.abortController.abort()
     this.histories.clear()
+  }
+
+  /** Get per-agent performance metrics. */
+  getMetrics(): Map<string, { latencyMs: number; turns: number }> {
+    const result = new Map<string, { latencyMs: number; turns: number }>()
+    for (const [id, ms] of this.agentLatency) {
+      result.set(id, { latencyMs: Math.round(ms), turns: this.agentTurns.get(id) ?? 0 })
+    }
+    return result
   }
 
   /** Register a new agent mid-run (e.g. created from a hallucinated name). */
@@ -141,6 +154,8 @@ export class AgentRunner {
     this.seenUnknownAgents = new Set()
     this.promptedForAgents = false
     this.sentContent = new Map(agents.map((a) => [a.id, []]))
+    this.agentLatency = new Map(agents.map((a) => [a.id, 0]))
+    this.agentTurns = new Map(agents.map((a) => [a.id, 0]))
 
     // Reset coordinator state and register all agents
     coord.clearSession()
@@ -522,6 +537,7 @@ export class AgentRunner {
           ? (delta, accumulated) => this.cb.onStream!(agent.id, delta, accumulated)
           : undefined
 
+        const t0 = performance.now()
         const response = await callLLMWithTools(
           systemPrompt,
           [...history, userMsg],
@@ -543,6 +559,9 @@ export class AgentRunner {
           this.cb.onProgress,
           streamCb,
         )
+        const elapsed = performance.now() - t0
+        this.agentLatency.set(agent.id, (this.agentLatency.get(agent.id) ?? 0) + elapsed)
+        this.agentTurns.set(agent.id, (this.agentTurns.get(agent.id) ?? 0) + 1)
 
         // Clear streaming state now that the LLM call is complete
         this.cb.onStream?.(null, '', '')

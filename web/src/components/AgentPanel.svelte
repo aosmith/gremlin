@@ -4,6 +4,7 @@
   import { PROVIDERS } from '../lib/types'
   import { cleanContent } from '../lib/cleanContent'
   import { enhanceProse } from '../lib/tableCards'
+  import { sanitizeHtml } from '../lib/sanitize'
   import { marked } from 'marked'
   import { store } from '../lib/store.svelte'
   import { tick } from 'svelte'
@@ -78,12 +79,12 @@
       <span style="color: {agent.color}">{agent.name}</span>
       <span class="role muted">/ {agent.role}</span>
     </div>
-    <button class="ghost icon" onclick={onclose} title="Close">✕</button>
+    <button class="ghost icon" onclick={onclose} title="Close" aria-label="Close panel">✕</button>
   </div>
 
   <div class="panel-body">
     <div class="section-label">Conversation</div>
-    <div class="conversation" bind:this={scrollEl}>
+    <div class="conversation" bind:this={scrollEl} role="log" aria-live="polite" aria-label="Agent conversation">
       {#if agentMessages.length === 0}
         <div class="empty-conv muted">No messages yet</div>
       {/if}
@@ -97,7 +98,7 @@
             {/if}
             <span class="msg-time muted mono">{formatTime(msg.timestamp)}</span>
           </div>
-          <div class="msg-content prose-sm">{@html enhanceProse(marked.parse(cleanContent(msg.content)) as string)}</div>
+          <div class="msg-content prose-sm">{@html sanitizeHtml(enhanceProse(marked.parse(cleanContent(msg.content)) as string))}</div>
         </div>
       {/each}
     </div>

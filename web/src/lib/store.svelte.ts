@@ -545,6 +545,67 @@ class GremlinStore {
     for (const cfg of this.agentConfigs) coord.addAgent(cfg)
   }
 
+  /** Export the current session as a downloadable JSON file. */
+  exportSession() {
+    const modeInfo = this.currentModeInfo
+    const data: ArchivedSession = {
+      task: this.task,
+      mode: this.appMode,
+      modeName: modeInfo.name,
+      modeIcon: modeInfo.icon,
+      timestamp: Date.now(),
+      messages: [...this.messages],
+      logs: [...this.logs],
+      output: this.output,
+      agentStates: this.agentStates.map((a) => ({ ...a, status: 'idle' as const })),
+    }
+
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const slug = this.task.trim().slice(0, 40).replace(/[^a-zA-Z0-9]+/g, '-').replace(/-+$/, '') || 'session'
+    a.download = `gremlin-${slug}-${Date.now()}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  /** Import a session from a JSON file. */
+  async importSession(file: File) {
+    try {
+      const text = await file.text()
+      const data = JSON.parse(text) as ArchivedSession
+      if (!data.messages || !Array.isArray(data.messages)) {
+        this.addLog('Import failed: invalid session file')
+        return
+      }
+
+      // Archive to history
+      const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+      saveArchivedSession(id, data)
+
+      const entry: SessionHistoryEntry = {
+        id,
+        task: data.task || '(imported)',
+        mode: data.mode || this.appMode,
+        modeIcon: data.modeIcon || this.currentModeInfo.icon,
+        modeName: data.modeName || this.currentModeInfo.name,
+        timestamp: data.timestamp || Date.now(),
+        messageCount: data.messages.length,
+        hasOutput: !!data.output,
+      }
+
+      this.sessionHistory = [entry, ...this.sessionHistory]
+      saveSessionHistory(this.sessionHistory)
+
+      // Restore it immediately
+      this.restoreSession(id)
+      this.addLog('Session imported successfully')
+    } catch {
+      this.addLog('Import failed: could not parse file')
+    }
+  }
+
   deleteHistoryEntry(id: string) {
     this.sessionHistory = this.sessionHistory.filter((e) => e.id !== id)
     saveSessionHistory(this.sessionHistory)
@@ -829,6 +890,14 @@ class GremlinStore {
         this.streamingAgentId = null
         this.streamingText    = ''
         this.syncAgentStates()
+        // Merge performance metrics into agent states
+        if (this.runner) {
+          const metrics = this.runner.getMetrics()
+          this.agentStates = this.agentStates.map((a) => {
+            const m = metrics.get(a.id)
+            return m ? { ...a, latencyMs: m.latencyMs, turns: m.turns } : a
+          })
+        }
         this.finalizeAgentStates()
         this.flushSession()
         this.archiveCurrentSession()

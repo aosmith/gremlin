@@ -30,6 +30,7 @@
         class="ghost icon edit-btn"
         onclick={(e) => { e.stopPropagation(); onedit() }}
         title="Edit"
+        aria-label="Edit {agent.name}"
       >✎</button>
     </div>
     <div class="meta">
@@ -49,6 +50,9 @@
       {/if}
       {#if agent.messageCount > 0}
         {agent.messageCount} msg{agent.messageCount !== 1 ? 's' : ''}
+      {/if}
+      {#if agent.latencyMs && agent.latencyMs > 0}
+        <span class="metric" title="{agent.turns ?? 0} turn{(agent.turns ?? 0) !== 1 ? 's' : ''}, {(agent.latencyMs / 1000).toFixed(1)}s total LLM time">{(agent.latencyMs / 1000).toFixed(1)}s</span>
       {/if}
     </div>
   </div>
@@ -172,5 +176,11 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 120px;
+  }
+
+  .metric {
+    color: var(--color-text-4);
+    font-size: 9px;
+    margin-left: auto;
   }
 </style>

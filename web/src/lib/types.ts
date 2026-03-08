@@ -194,6 +194,10 @@ export interface AgentState extends AgentConfig {
   messageCount: number
   unreadCount: number
   result?: string
+  /** Total time spent in LLM calls (ms). */
+  latencyMs?: number
+  /** Number of LLM turns completed. */
+  turns?: number
 }
 
 export interface Message {

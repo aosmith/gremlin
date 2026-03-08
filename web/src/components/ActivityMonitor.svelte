@@ -2,6 +2,7 @@
   import type { AgentConfig, Message } from '../lib/types'
   import { cleanContent } from '../lib/cleanContent'
   import { enhanceProse } from '../lib/tableCards'
+  import { sanitizeHtml } from '../lib/sanitize'
   import { marked } from 'marked'
   import { tick } from 'svelte'
 
@@ -15,8 +16,9 @@
     isRunning?: boolean
     onCopy?: () => void
     onReply?: (text: string) => void
+    onRetry?: (agentId: string) => void
   }
-  const { messages, agents, logs, streamingAgentId = null, streamingText = '', outputHtml = '', isRunning = false, onCopy, onReply }: Props = $props()
+  const { messages, agents, logs, streamingAgentId = null, streamingText = '', outputHtml = '', isRunning = false, onCopy, onReply, onRetry }: Props = $props()
 
   let replyText = $state('')
 
@@ -74,7 +76,7 @@
     <span class="count muted">{messages.length} events</span>
   </div>
 
-  <div class="feed" bind:this={scrollEl}>
+  <div class="feed" bind:this={scrollEl} role="log" aria-live="polite" aria-label="Agent activity feed">
     {#if messages.length === 0 && logs.length === 0}
       <div class="empty">
         <div class="empty-icon">◉</div>
@@ -92,7 +94,10 @@
           <span class="agent-name" style="color: {agentColor(msg.toAgent)}">{agentName(msg.toAgent)}</span>
         </span>
         <span class="badge {msg.type}">{msg.type}</span>
-        <div class="content prose-sm">{@html enhanceProse(marked.parse(cleanContent(msg.content)) as string)}</div>
+        {#if msg.type === 'error' && onRetry && isRunning}
+          <button class="retry-inline" onclick={() => onRetry(msg.fromAgent)} aria-label="Retry {agentName(msg.fromAgent)}">Retry</button>
+        {/if}
+        <div class="content prose-sm">{@html sanitizeHtml(enhanceProse(marked.parse(cleanContent(msg.content)) as string))}</div>
       </div>
     {/each}
 
@@ -119,7 +124,7 @@
             <button class="ghost btn-sm" onclick={onCopy}>Copy</button>
           {/if}
         </div>
-        <div class="result-body prose-sm">{@html outputHtml}</div>
+        <div class="result-body prose-sm">{@html sanitizeHtml(outputHtml)}</div>
         {#if onReply}
           <div class="reply-bar">
             <input
@@ -249,6 +254,25 @@
   .badge.error  { background: rgba(248,81,73,0.2);  color: var(--accent-red); }
   .badge.human  { background: rgba(88,166,255,0.2); color: #79c0ff; }
   .badge.result { background: rgba(63,185,80,0.2);  color: var(--accent); }
+
+  .retry-inline {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 7px;
+    border-radius: 4px;
+    border: 1px solid rgba(255,90,90,0.3);
+    background: rgba(255,90,90,0.08);
+    color: var(--accent-red, #f85149);
+    cursor: pointer;
+    height: auto;
+    line-height: 1.4;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+  }
+  .retry-inline:hover {
+    background: rgba(255,90,90,0.18);
+    border-color: rgba(255,90,90,0.5);
+  }
 
   .content {
     width: 100%;

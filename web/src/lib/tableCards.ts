@@ -5,13 +5,28 @@
  * - Wraps data-heavy bullet sections in highlight boxes
  * - Adds spacing between major sections
  */
+// Memoization cache — avoids reprocessing identical HTML on every render
+const _cache = new Map<string, string>()
+const MAX_CACHE_SIZE = 256
+
 export function enhanceProse(html: string): string {
+  const cached = _cache.get(html)
+  if (cached !== undefined) return cached
+
   let result = tablesToCards(html)
   result = wrapSearchSections(result)
   result = wrapDataCallouts(result)
   result = addSectionSpacing(result)
   result = highlightTickers(result)
   result = styleAgentLabels(result)
+
+  // Evict oldest entries when cache is full
+  if (_cache.size >= MAX_CACHE_SIZE) {
+    const first = _cache.keys().next().value
+    if (first !== undefined) _cache.delete(first)
+  }
+  _cache.set(html, result)
+
   return result
 }
 
