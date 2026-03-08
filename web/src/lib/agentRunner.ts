@@ -776,6 +776,10 @@ QUALITY GATE — If worker data is INSUFFICIENT for a high-quality report:
 • Do NOT call mark_done() yet — wait for the additional data
 • Only produce your final report when you have enough concrete data to fill every field
 • It is BETTER to request another round of data than to produce a weak report with gaps
+
+EDITOR PASS — Before calling mark_done(), send your complete draft to the Editor agent via send_message("Editor", <your full draft>).
+Wait for the Editor to return a formatted version, then call mark_done() with the Editor's output as the result.
+If the Editor is not available or does not respond within 1 round, call mark_done() with your own draft.
 ` : ''}
 ${agent.role === 'worker' || agent.role === 'custom' ? `
 WORKER INSTRUCTIONS — You can collaborate directly with other workers listed above.
@@ -785,20 +789,6 @@ WORKER INSTRUCTIONS — You can collaborate directly with other workers listed a
 • Keep peer exchanges focused — one or two rounds of back-and-forth at most.
 • Do NOT message peers just to be polite — only when it adds concrete value (shared data, dependency, contradiction).
 
-OUTPUT FORMAT:
-Your "analysis" text is displayed to humans in the Activity Monitor with full Markdown rendering.
-Format it as RICH MARKDOWN — use headers (##), bold, tables, and bullet points for readability.
-Structure every response with clear sections. Example:
-
-## Key Findings
-| Metric | Value |
-|--------|-------|
-| P/E    | 22.5  |
-...
-
-## Analysis
-...
-
 When sending data to OTHER AGENTS via send_message(), include structured data so they can parse it easily.
 For financial data, include a JSON block in your message:
 \`\`\`json
@@ -806,9 +796,7 @@ For financial data, include a JSON block in your message:
 \`\`\`
 
 CRITICAL OUTPUT RULE: Always produce CONCRETE, SPECIFIC output — real data, names, numbers, lists, calculations.
-Never describe what you "would do" or outline steps. Actually DO the work and report the results.
-Bad: "Set up a scan with criteria and select top tickers"
-Good: "Top 10 by market cap: $AAPL ($3.1T, 8.2%), $MSFT ($2.9T, 7.8%), ..."` : ''}
+Never describe what you "would do" or outline steps. Actually DO the work and report the results.` : ''}
 ${roundBudget}${agent.systemPrompt.includes('$ prefix') ? `
 
 OUTPUT FORMAT REMINDER — MANDATORY:
