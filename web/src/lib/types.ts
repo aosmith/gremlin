@@ -25,7 +25,7 @@ export const PROVIDERS: ProviderPreset[] = [
     format: 'openai',
     endpoint: 'http://localhost:11434/v1/chat/completions',
     requiresKey: false,
-    defaultModel: '',
+    defaultModel: 'qwen3:72b',
     models: [],    // populated dynamically from /api/tags
     description: 'Local — no key needed',
   },
@@ -406,6 +406,7 @@ function engineeringAgents(): AgentConfig[] {
       name: 'Frontend Dev',
       role: 'worker',
       color: AGENT_COLORS[1],
+      model: 'qwen2.5-coder:32b',
       systemPrompt:
         'Search for current framework docs, API references, and best practices before writing code. You are the frontend developer. Build the UI: components, pages, client-state, and UX flows. Use write_file to create complete source files. Use read_file before modifying existing files. Write clean, accessible, well-typed code. Coordinate with the Backend Dev on API contracts.' + webHint,
     },
@@ -414,6 +415,7 @@ function engineeringAgents(): AgentConfig[] {
       name: 'Backend Dev',
       role: 'worker',
       color: AGENT_COLORS[2],
+      model: 'qwen2.5-coder:32b',
       systemPrompt:
         'Search for current library docs, security advisories, and API best practices before implementing. You are the backend developer. Implement APIs, business logic, data models, and integrations. Use write_file to create complete source files. Use list_directory and read_file to understand the project structure first. Prioritise correctness, input validation, and secure handling of data.' + webHint,
     },
@@ -422,6 +424,7 @@ function engineeringAgents(): AgentConfig[] {
       name: 'Full-Stack Dev',
       role: 'worker',
       color: AGENT_COLORS[5],
+      model: 'qwen2.5-coder:32b',
       systemPrompt:
         'Search for current integration patterns, auth standards, and library docs before implementing. You are the full-stack developer. Handle cross-cutting concerns: auth flows, shared utilities, API client layer, database migrations. Bridge gaps between the frontend and backend. Use read_file and list_directory to stay in sync with what others have built, then write_file to implement.' + webHint,
     },
@@ -430,6 +433,7 @@ function engineeringAgents(): AgentConfig[] {
       name: 'DevOps Eng',
       role: 'worker',
       color: AGENT_COLORS[6],
+      model: 'qwen2.5-coder:32b',
       systemPrompt:
         'Search for current Docker, CI/CD, and cloud platform docs before writing infrastructure. You are the DevOps engineer. Write infrastructure-as-code: Dockerfiles, docker-compose files, CI/CD workflows (GitHub Actions), environment configs, and deployment scripts. Use write_file to create these files. Keep infrastructure simple and reproducible.' + webHint,
     },
@@ -438,6 +442,7 @@ function engineeringAgents(): AgentConfig[] {
       name: 'QA Engineer',
       role: 'worker',
       color: AGENT_COLORS[3],
+      model: 'qwen2.5-coder:32b',
       systemPrompt:
         'Search for current testing framework docs and known issues before writing tests. You are the QA engineer. Use read_file to review code from other team members. Write unit tests, integration tests, and end-to-end test specs using write_file. Flag bugs, edge cases, missing error handling, and security issues with specific file paths and line references.' + webHint,
     },
@@ -446,6 +451,7 @@ function engineeringAgents(): AgentConfig[] {
       name: 'Security Eng',
       role: 'worker',
       color: AGENT_COLORS[7],
+      model: 'qwen2.5-coder:32b',
       systemPrompt:
         'Search for current CVEs, security advisories, and OWASP guidance before auditing. You are the security engineer. Review all code for vulnerabilities: injection attacks, auth bypasses, insecure defaults, secrets in code, dependency risks, and data exposure. Use read_file to audit the codebase. Write security-hardened alternatives with write_file when issues are found.' + webHint,
     },
@@ -454,6 +460,7 @@ function engineeringAgents(): AgentConfig[] {
       name: 'Simplicity Eng',
       role: 'worker',
       color: '#e8b04b',
+      model: 'qwen2.5-coder:32b',
       systemPrompt:
         'Search for current idiomatic patterns and standard library features before simplifying. You are the simplicity engineer. Your sole job is to prevent over-engineering. Use read_file and list_directory to audit all code written by the team. Flag and remove: dead code, duplicate logic, abstractions with only one call site, unnecessary wrapper functions, over-engineered error handling for impossible cases, premature generalisation, and feature flags for things that could just be code. For every piece of complexity you find, ask "what is the simplest thing that could possibly work?" then write_file the simpler version. Be ruthless — three lines of obvious code beats a clever abstraction every time.' + webHint,
     },
@@ -503,6 +510,7 @@ function financeAgents(): AgentConfig[] {
       name: 'Value Analyst',
       role: 'worker',
       color: AGENT_COLORS[1],
+      model: 'vanilj/palmyra-fin-70b-32k',
       systemPrompt:
         'You are the Value Analyst. Your specialty is fundamental valuation — finding stocks trading below intrinsic value. '
         + 'You MUST use web_fetch() to pull real data from Finviz and Yahoo Finance before analyzing.\n\n'
@@ -546,6 +554,7 @@ function financeAgents(): AgentConfig[] {
       name: 'Filings Analyst',
       role: 'worker',
       color: AGENT_COLORS[3],
+      model: 'vanilj/palmyra-fin-70b-32k',
       systemPrompt:
         'You are the Filings Analyst. Your specialty is SEC EDGAR — analyzing 10-K, 10-Q, and 8-K filings for insights the market may have missed. '
         + 'You MUST use web_fetch() to pull real filing data before analyzing.\n\n'
