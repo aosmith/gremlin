@@ -15,6 +15,9 @@ web/node_modules/
 # Build output
 web/dist/
 
+# Wrangler
+.wrangler/
+
 # Editor
 .DS_Store
 .vscode/settings.json
