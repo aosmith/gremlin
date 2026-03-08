@@ -4,7 +4,10 @@
       "Bash(grep -n \"PROVIDERS\" /Users/alex/Development/gremlin/web/src/lib/*.ts /Users/alex/Development/gremlin/web/src/components/*.svelte 2>/dev/null | head -30)",
       "Bash(cd /Users/alex/Development/gremlin/web && npm install -D vitest happy-dom 2>&1 | tail -5)",
       "Bash(npm test 2>&1)",
-      "Bash(npm run build 2>&1 | tail -10)"
+      "Bash(npm run build 2>&1 | tail -10)",
+      "Bash(git:*)",
+      "Bash(npm run:*)",
+      "Bash(npm install:*)"
     ]
   }
 }
