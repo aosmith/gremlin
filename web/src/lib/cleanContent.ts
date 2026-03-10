@@ -51,6 +51,43 @@ function cleanVisualNoise(text: string): string {
 }
 
 /**
+ * Strip orchestrator delegation instructions meant for other agents, not humans.
+ * Removes lines like "1. Send Value Analyst to...", "Please message 'Strategist'...", etc.
+ */
+function stripDelegationNoise(text: string): string {
+  const lines = text.split('\n')
+  const filtered = lines.filter(line => {
+    const t = line.trim()
+    // Numbered delegation: "1. Send Value Analyst to..."
+    if (/^\d+\.\s*Send\s+[A-Z]/i.test(t)) return false
+    // Unnumbered: "Send Risk Manager to/for..."
+    if (/^Send\s+[A-Z][a-zA-Z\s]{2,30}(?:to|for)\s/i.test(t)) return false
+    // "Please message 'Agent'" / "Please message "Agent""
+    if (/^Please\s+message\s+["']/i.test(t)) return false
+    // "Message 'Agent' to..."
+    if (/^Message\s+["'][A-Z]/i.test(t)) return false
+    // "Instruct [Agent] to..." / "Direct [Agent] to..."
+    if (/^(?:Instruct|Direct|Task|Assign)\s+(?:the\s+)?[A-Z][a-zA-Z\s]{2,30}(?:to|with)\s/i.test(t)) return false
+    // "I will now send/message/direct..."
+    if (/^I\s+will\s+(?:now\s+)?(?:send|message|direct|instruct|task|assign)\b/i.test(t)) return false
+    return true
+  })
+  return filtered.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+/** Convert bare send_message("Agent", "content") calls into readable → Agent: content lines. */
+function formatSendMessageCalls(text: string): string {
+  return text.replace(
+    /send_message\(\s*"([^"]+)"\s*,\s*"((?:[^"\\]|\\.)*)"\s*\)/g,
+    (_match, agent: string, content: string) => {
+      // Unescape any escaped quotes in the content
+      const cleaned = content.replace(/\\"/g, '"').replace(/\\n/g, '\n')
+      return `→ **${agent}**: ${cleaned}`
+    }
+  )
+}
+
+/**
  * Format agent JSON into readable text for the Activity Monitor / Agent Panel.
  * Compact single-line format.
  */
@@ -59,7 +96,7 @@ export function cleanContent(raw: string): string {
   const stripped = cleanVisualNoise(raw.replace(/\[(?:From|To)\s+[^\]]+\]\s*:?\s*/gi, '').trim())
 
   const trimmed = stripped.trim()
-  if (!trimmed.startsWith('{')) return stripped
+  if (!trimmed.startsWith('{')) return stripDelegationNoise(formatSendMessageCalls(stripped))
 
   const obj = tryParseJson(trimmed)
   if (!obj) return stripped
@@ -67,7 +104,8 @@ export function cleanContent(raw: string): string {
   const parts: string[] = []
 
   if (typeof obj.analysis === 'string' && obj.analysis.trim()) {
-    parts.push(obj.analysis.trim())
+    const cleaned = stripDelegationNoise(formatSendMessageCalls(obj.analysis.trim()))
+    if (cleaned) parts.push(cleaned)
   }
 
   if (Array.isArray(obj.messages) && obj.messages.length > 0) {

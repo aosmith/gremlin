@@ -153,14 +153,16 @@
         Web Search Not Configured
       </div>
       <div class="modal-body">
-        <p>An agent wants to search the web but no search provider is set up. Pick one to continue:</p>
+        <p>An agent wants to search the web but no search provider is set up. Pick one or more to continue:</p>
         <div class="search-provider-grid">
           {#each SEARCH_PROVIDERS as p (p.id)}
             <button
               class="search-provider-btn"
-              class:active={store.settings.searchProvider === p.id}
+              class:active={store.settings.searchProviders?.includes(p.id)}
               onclick={() => {
-                store.updateSettings({ searchProvider: p.id, searchEndpoint: p.endpoint || store.settings.searchEndpoint })
+                const cur = store.settings.searchProviders ?? []
+                const next = cur.includes(p.id) ? cur.filter((id: string) => id !== p.id) : [...cur, p.id]
+                store.updateSettings({ searchProviders: next, searchEndpoint: p.endpoint || store.settings.searchEndpoint })
               }}
             >
               <span class="sp-icon">{p.icon}</span>
@@ -169,40 +171,37 @@
             </button>
           {/each}
         </div>
-        {#if store.settings.searchProvider}
-          {@const sp = SEARCH_PROVIDERS.find((p) => p.id === store.settings.searchProvider)}
-          {#if sp?.requiresKey}
-            <div class="field" style="margin-top:12px">
-              <label for="search-key-modal">API Key</label>
-              <input
-                id="search-key-modal"
-                type="password"
-                value={store.settings.searchApiKey}
-                oninput={(e) => store.updateSettings({ searchApiKey: (e.target as HTMLInputElement).value })}
-                placeholder="Paste your API key…"
-                autocomplete="off"
-              />
-            </div>
-          {/if}
-          {#if sp?.requiresEndpoint}
-            <div class="field" style="margin-top:12px">
-              <label for="search-endpoint-modal">Instance URL</label>
-              <input
-                id="search-endpoint-modal"
-                type="text"
-                value={store.settings.searchEndpoint}
-                oninput={(e) => store.updateSettings({ searchEndpoint: (e.target as HTMLInputElement).value })}
-                placeholder="https://your-searxng.example.com"
-              />
-            </div>
-          {/if}
+        {#if store.settings.searchProviders?.some((id: string) => SEARCH_PROVIDERS.find((p) => p.id === id)?.requiresKey)}
+          <div class="field" style="margin-top:12px">
+            <label for="search-key-modal">API Key</label>
+            <input
+              id="search-key-modal"
+              type="password"
+              value={store.settings.searchApiKey}
+              oninput={(e) => store.updateSettings({ searchApiKey: (e.target as HTMLInputElement).value })}
+              placeholder="Paste your API key…"
+              autocomplete="off"
+            />
+          </div>
+        {/if}
+        {#if store.settings.searchProviders?.includes('searxng')}
+          <div class="field" style="margin-top:12px">
+            <label for="search-endpoint-modal">SearXNG Instance URL</label>
+            <input
+              id="search-endpoint-modal"
+              type="text"
+              value={store.settings.searchEndpoint}
+              oninput={(e) => store.updateSettings({ searchEndpoint: (e.target as HTMLInputElement).value })}
+              placeholder="https://searx.be"
+            />
+          </div>
         {/if}
       </div>
       <div class="modal-footer">
         <button class="ghost" onclick={() => store.cancelSearchSetup()}>Skip</button>
         <button
           class="primary"
-          disabled={!store.settings.searchProvider}
+          disabled={!store.settings.searchProviders?.length}
           onclick={() => store.resolveSearchSetup()}
         >Save & Search</button>
       </div>

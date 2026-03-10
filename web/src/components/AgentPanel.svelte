@@ -275,6 +275,16 @@
   .prose-sm :global(.callout-data) { background: rgba(210,153,34,0.04); border-left: 2px solid rgba(210,153,34,0.35); }
   .prose-sm :global(.section-break) { margin: 0.5em 0 0.2em; border-top: 1px solid rgba(48,54,61,0.3); }
 
+  /* Verdict badges */
+  .prose-sm :global(.verdict) { display: inline-block; font-family: var(--font-mono); font-size: 0.78em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 7px; border-radius: 3px; line-height: 1.5; }
+  .prose-sm :global(.verdict-pos) { color: #3fb950; background: rgba(63,185,80,0.10); border: 1px solid rgba(63,185,80,0.25); }
+  .prose-sm :global(.verdict-neut) { color: #d29922; background: rgba(210,153,34,0.10); border: 1px solid rgba(210,153,34,0.25); }
+  .prose-sm :global(.verdict-neg) { color: #f85149; background: rgba(248,81,73,0.10); border: 1px solid rgba(248,81,73,0.25); }
+
+  /* Signed numbers */
+  .prose-sm :global(.num-pos) { color: #3fb950; font-weight: 600; }
+  .prose-sm :global(.num-neg) { color: #f85149; font-weight: 600; }
+
   .human-input-section {
     flex-shrink: 0;
     padding: 0 14px 8px;

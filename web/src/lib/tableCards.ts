@@ -19,6 +19,8 @@ export function enhanceProse(html: string): string {
   result = addSectionSpacing(result)
   result = highlightTickers(result)
   result = styleAgentLabels(result)
+  result = highlightVerdicts(result)
+  result = colorSignedNumbers(result)
 
   // Evict oldest entries when cache is full
   if (_cache.size >= MAX_CACHE_SIZE) {
@@ -173,5 +175,38 @@ function styleAgentLabels(html: string): string {
     // Decode &amp; back to & for display
     const display = name.replace(/&amp;/g, '&')
     return `<span class="agent-label">${display}</span>`
+  })
+}
+
+/**
+ * Convert standalone bold verdict words into colored badge pills.
+ * Matches <strong>BUY</strong>, <strong>HOLD</strong>, etc.
+ * Only matches short bold text (≤25 chars) that exactly matches a known verdict.
+ */
+const VERDICT_POS = new Set(['BUY', 'STRONG BUY', 'OVERWEIGHT', 'OUTPERFORM', 'BULLISH', 'ACCUMULATE', 'LONG', 'POSITIVE', 'LOW RISK'])
+const VERDICT_NEU = new Set(['HOLD', 'NEUTRAL', 'MARKET PERFORM', 'EQUAL WEIGHT', 'SECTOR PERFORM', 'MIXED', 'MODERATE', 'MARKET WEIGHT', 'MEDIUM', 'MEDIUM RISK'])
+const VERDICT_NEG = new Set(['SELL', 'STRONG SELL', 'UNDERWEIGHT', 'UNDERPERFORM', 'BEARISH', 'AVOID', 'REDUCE', 'SHORT', 'CRITICAL', 'NEGATIVE', 'HIGH RISK'])
+
+function highlightVerdicts(html: string): string {
+  return html.replace(/<strong>([^<]{2,25})<\/strong>/g, (match, inner: string) => {
+    const upper = inner.trim().toUpperCase()
+    if (VERDICT_POS.has(upper)) return `<span class="verdict verdict-pos">${inner.trim()}</span>`
+    if (VERDICT_NEU.has(upper)) return `<span class="verdict verdict-neut">${inner.trim()}</span>`
+    if (VERDICT_NEG.has(upper)) return `<span class="verdict verdict-neg">${inner.trim()}</span>`
+    return match
+  })
+}
+
+/**
+ * Color explicitly signed numbers: +12.3% green, -5.2% red.
+ * Only matches numbers with a leading + or − and a trailing unit (%, bp, bps).
+ * Operates on text nodes (between > and <) to avoid mangling HTML.
+ */
+function colorSignedNumbers(html: string): string {
+  return html.replace(/>([^<]+)</g, (_full, text: string) => {
+    const colored = text
+      .replace(/(\+\d[\d,.]*(?:%|bp|bps)\b)/g, '<span class="num-pos">$1</span>')
+      .replace(/([-−]\d[\d,.]*(?:%|bp|bps)\b)/g, '<span class="num-neg">$1</span>')
+    return `>${colored}<`
   })
 }

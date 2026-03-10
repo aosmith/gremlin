@@ -7,7 +7,17 @@
       "Bash(npm run build 2>&1 | tail -10)",
       "Bash(git:*)",
       "Bash(npm run:*)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(screencapture:*)",
+      "Bash(npm outdated:*)",
+      "Bash(npm info:*)",
+      "Bash(lsof:*)",
+      "Bash(npm:*)",
+      "Bash(ollama list:*)",
+      "Bash(ollama pull:*)",
+      "Bash(curl:*)",
+      "Bash(memory_pressure:*)",
+      "Bash(npx playwright:*)"
     ]
   }
 }

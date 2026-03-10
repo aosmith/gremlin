@@ -152,7 +152,7 @@
       <div class="field">
         <label for="agent-search">Search Provider <span class="optional">(override)</span></label>
         <select id="agent-search" bind:value={draft.searchProvider}>
-          <option value="">Global: {store.settings.searchProvider || 'none'}</option>
+          <option value="">Global: {store.settings.searchProviders?.join(', ') || 'none'}</option>
           {#each SEARCH_PROVIDERS as p (p.id)}
             <option value={p.id}>{p.icon} {p.name}</option>
           {/each}

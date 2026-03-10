@@ -400,6 +400,10 @@ function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[], si
     messages,
     stream,
   }
+  // Keep Ollama models loaded for 24h to avoid costly cold-start reloads
+  if (settings.apiEndpoint.includes('localhost:11434') || settings.apiEndpoint.includes('127.0.0.1:11434')) {
+    body.keep_alive = '24h'
+  }
   if (tools?.length) {
     body.tools = tools
     body.tool_choice = 'auto'
@@ -638,7 +642,7 @@ export async function unloadOllamaModels(
   // Query what's actually loaded in Ollama and unload those directly
   // This is more reliable than guessing model names (handles :latest tags, etc.)
   try {
-    const psResp = await fetch(`${base}/api/ps`, { signal: AbortSignal.timeout(5_000) })
+    const psResp = await fetch(`${base}/api/ps`)
     if (psResp.ok) {
       const psData = await psResp.json()
       const loaded = (psData.models ?? []) as Array<{ name: string }>
@@ -650,7 +654,7 @@ export async function unloadOllamaModels(
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ model: m.name, keep_alive: 0 }),
-              signal: AbortSignal.timeout(10_000),
+              // No timeout — large models on CPU can be slow
             })
             if (!resp.ok) errors.push(`${m.name}: HTTP ${resp.status}`)
           } catch (err) {
@@ -677,7 +681,7 @@ export async function unloadOllamaModels(
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ model, keep_alive: 0 }),
-        signal: AbortSignal.timeout(10_000),
+        // No timeout — large models on CPU can be slow
       })
       if (!resp.ok) errors.push(`${model}: HTTP ${resp.status}`)
     } catch (err) {
@@ -690,7 +694,7 @@ export async function unloadOllamaModels(
 
 export async function fetchOllamaModels(baseUrl: string): Promise<string[]> {
   const base = baseUrl.replace(/\/v1.*$/, '')
-  const resp = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(3000) })
+  const resp = await fetch(`${base}/api/tags`)
   if (!resp.ok) throw new Error(`${resp.status}`)
   const data = await resp.json()
   return ((data.models ?? []) as Array<{ name: string }>).map((m) => m.name).sort()
@@ -700,7 +704,7 @@ export async function fetchOpenAIModels(endpoint: string, apiKey: string): Promi
   const base = endpoint.replace(/\/chat\/completions.*$/, '').replace(/\/$/, '')
   const headers: Record<string, string> = {}
   if (apiKey.trim()) headers['authorization'] = `Bearer ${apiKey}`
-  const resp = await fetch(`${base}/models`, { headers, signal: AbortSignal.timeout(5000) })
+  const resp = await fetch(`${base}/models`, { headers })
   if (!resp.ok) throw new Error(`${resp.status}`)
   const data = await resp.json()
   return ((data.data ?? []) as Array<{ id: string }>).map((m) => m.id).sort()

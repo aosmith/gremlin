@@ -5,7 +5,7 @@ import { AgentRunner } from './agentRunner'
 import type { RunnerCallbacks } from './agentRunner'
 import { unloadOllamaModels } from './api'
 import { projectFS } from './filesystem'
-import { DEV_TOOLS, SEARCH_TOOLS } from './tools'
+import { DEV_TOOLS, SEARCH_TOOLS, BROWSER_TOOLS } from './tools'
 import { isWebGPUAvailable } from './webllm'
 import type { WebLLMProgress } from './webllm'
 import * as coord from './coordinator'
@@ -29,9 +29,17 @@ function lsDel(key: string) {
 }
 
 function loadSettings(): Settings  {
-  const s = { ...DEFAULT_SETTINGS, ...ls('gremlin_settings', DEFAULT_SETTINGS) }
+  const raw = ls('gremlin_settings', DEFAULT_SETTINGS) as any
+  const s = { ...DEFAULT_SETTINGS, ...raw }
   // Migrate: empty proxyUrl → built-in dev proxy
   if (!s.proxyUrl?.trim()) s.proxyUrl = DEFAULT_SETTINGS.proxyUrl
+  // Migrate: old searchProvider (string) → searchProviders (array)
+  if (typeof raw.searchProvider === 'string' && !raw.searchProviders) {
+    s.searchProviders = raw.searchProvider ? [raw.searchProvider] : DEFAULT_SETTINGS.searchProviders
+    if (raw.searchProvider === 'searxng' && !s.searchEndpoint) s.searchEndpoint = 'https://searx.be'
+  }
+  // Migrate: add llmProviders if missing
+  if (!Array.isArray(s.llmProviders)) s.llmProviders = []
   return s
 }
 function saveSettings(s: Settings) { lsSet('gremlin_settings', s) }
@@ -727,7 +735,8 @@ class GremlinStore {
 
     const tools = [
       ...(this.appMode === 'engineering' && projectFS.isOpen ? DEV_TOOLS : []),
-      ...(this.settings.searchProvider ? SEARCH_TOOLS : []),
+      ...(this.settings.searchProviders?.length ? SEARCH_TOOLS : []),
+      ...BROWSER_TOOLS,
     ]
 
     try {
@@ -808,7 +817,8 @@ class GremlinStore {
 
     const tools = [
       ...(this.appMode === 'engineering' && projectFS.isOpen ? DEV_TOOLS : []),
-      ...(this.settings.searchProvider ? SEARCH_TOOLS : []),
+      ...(this.settings.searchProviders?.length ? SEARCH_TOOLS : []),
+      ...BROWSER_TOOLS,
     ]
 
     try {

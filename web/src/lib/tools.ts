@@ -117,6 +117,140 @@ export const SEARCH_TOOLS: OAITool[] = [
   },
 ]
 
+// ── Browser tools (Playwright sidecar) ────────────────────────────────────────
+
+const BROWSER_SIDECAR = 'http://127.0.0.1:3131'
+
+export const BROWSER_TOOLS: OAITool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'browse_navigate',
+      description:
+        'Navigate the browser to a URL. Returns page title and HTTP status. ' +
+        'Requires the browser sidecar server (node server/browser-server.mjs).',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'URL to navigate to' },
+        },
+        required: ['url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browse_content',
+      description:
+        'Extract text content from the current page or a specific element. ' +
+        'Omit selector to get the full page text.',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS selector to extract from (optional — omit for full page)' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browse_click',
+      description: 'Click an element on the page by CSS selector.',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS selector of the element to click' },
+        },
+        required: ['selector'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browse_type',
+      description: 'Type text into an input field. Set submit=true to press Enter after.',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS selector of the input element' },
+          text: { type: 'string', description: 'Text to type' },
+          submit: { type: 'string', description: '"true" to press Enter after typing, "false" otherwise', enum: ['true', 'false'] },
+        },
+        required: ['selector', 'text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browse_evaluate',
+      description:
+        'Run JavaScript in the browser page context and return the result. ' +
+        'Use for checking computed styles, DOM state, localStorage, etc.',
+      parameters: {
+        type: 'object',
+        properties: {
+          js: { type: 'string', description: 'JavaScript code to evaluate in the page' },
+        },
+        required: ['js'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browse_assert',
+      description:
+        'Assert conditions about elements on the page. Returns PASS/FAIL for each check. ' +
+        'Checks: existence (always), text content (if text provided), visibility (if visible provided), count (if count provided).',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS selector to check' },
+          text: { type: 'string', description: 'Expected text the element should contain' },
+          visible: { type: 'string', description: '"true" or "false" — assert visibility', enum: ['true', 'false'] },
+          count: { type: 'string', description: 'Expected number of matching elements' },
+        },
+        required: ['selector'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browse_links',
+      description: 'List all links on the current page with their text and href.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browse_wait',
+      description: 'Wait for an element to appear on the page (up to 10 seconds).',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS selector to wait for' },
+          state: { type: 'string', description: 'Wait condition', enum: ['visible', 'hidden', 'attached', 'detached'] },
+        },
+        required: ['selector'],
+      },
+    },
+  },
+]
+
+/** Set of browser tool names for quick lookup. */
+export const BROWSER_TOOL_NAMES = new Set(BROWSER_TOOLS.map((t) => t.function.name))
+
 // ── Protocol tools (multi-agent coordination) ────────────────────────────────
 
 /** Protocol tools used by all agents for inter-agent communication. */
@@ -225,7 +359,7 @@ export async function executeTool(
       }
       case 'web_search': {
         const { query } = args as { query: string }
-        if (!settings?.searchProvider) {
+        if (!settings?.searchProviders?.length) {
           // Prompt user to configure search
           if (onSearchNotConfigured) {
             const configured = await onSearchNotConfigured()
@@ -244,6 +378,11 @@ export async function executeTool(
         break
       }
       default:
+        // Browser sidecar tools — proxy to localhost:3131
+        if (BROWSER_TOOL_NAMES.has(name)) {
+          result = await callBrowserSidecar(name, args)
+          break
+        }
         throw new Error(`Unknown tool: ${name}`)
     }
     return { id, name, args, result, isError: false }
@@ -305,4 +444,55 @@ async function fetchWebPage(url: string, settings?: Settings, signal?: AbortSign
   }
 
   return text.length > MAX_FETCH_CHARS ? text.slice(0, MAX_FETCH_CHARS) + '\n...(truncated)' : text
+}
+
+// ── Browser sidecar proxy ──────────────────────────────────────────────────
+
+/** Map tool names to sidecar HTTP routes. */
+const BROWSER_ROUTES: Record<string, { method: string; path: string }> = {
+  browse_navigate: { method: 'POST', path: '/navigate' },
+  browse_content:  { method: 'POST', path: '/content' },
+  browse_click:    { method: 'POST', path: '/click' },
+  browse_type:     { method: 'POST', path: '/type' },
+  browse_evaluate: { method: 'POST', path: '/evaluate' },
+  browse_assert:   { method: 'POST', path: '/assert' },
+  browse_links:    { method: 'POST', path: '/links' },
+  browse_wait:     { method: 'POST', path: '/wait' },
+}
+
+async function callBrowserSidecar(
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<string> {
+  const route = BROWSER_ROUTES[toolName]
+  if (!route) throw new Error(`No browser route for: ${toolName}`)
+
+  // Convert string booleans/numbers from tool args
+  const body: Record<string, unknown> = { ...args }
+  if (body.submit === 'true') body.submit = true
+  if (body.submit === 'false') body.submit = false
+  if (body.visible === 'true') body.visible = true
+  if (body.visible === 'false') body.visible = false
+  if (typeof body.count === 'string') body.count = parseInt(body.count, 10)
+
+  let resp: Response
+  try {
+    resp = await fetch(`${BROWSER_SIDECAR}${route.path}`, {
+      method: route.method,
+      headers: { 'Content-Type': 'application/json' },
+      body: route.method === 'POST' ? JSON.stringify(body) : undefined,
+    })
+  } catch {
+    throw new Error(
+      'Browser sidecar not running. Start it with: node server/browser-server.mjs\n' +
+      'The sidecar provides a headless Chromium browser for testing and verification.',
+    )
+  }
+
+  const data = await resp.json()
+  if (!resp.ok || data.error) {
+    throw new Error(data.error ?? `Browser sidecar returned ${resp.status}`)
+  }
+
+  return JSON.stringify(data, null, 2)
 }

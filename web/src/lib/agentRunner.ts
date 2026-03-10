@@ -80,6 +80,8 @@ export class AgentRunner {
   private agentLatency = new Map<string, number>()
   /** LLM turn count per agent. */
   private agentTurns = new Map<string, number>()
+  /** Round-robin counter for multi-provider dispatch. */
+  private providerIndex = 0
 
   abort() {
     this.aborted = true
@@ -104,6 +106,33 @@ export class AgentRunner {
     this.processedCounts.set(agent.id, 0)
     this.sentContent.set(agent.id, [])
     coord.addAgent(agent)
+  }
+
+  /**
+   * Resolve LLM provider settings for an agent call.
+   * If llmProviders has entries, round-robin across them.
+   * Per-agent model overrides are applied on top.
+   */
+  private resolveProviderSettings(agent: AgentConfig): Settings {
+    const providers = this.settings.llmProviders
+    if (providers?.length) {
+      const p = providers[this.providerIndex % providers.length]
+      this.providerIndex++
+      const s: Settings = {
+        ...this.settings,
+        apiEndpoint: p.endpoint,
+        apiKey: p.apiKey,
+        model: p.model,
+        apiFormat: p.format,
+      }
+      // Per-agent model override wins over provider default
+      if (agent.model?.trim()) s.model = agent.model.trim()
+      return s
+    }
+    // Legacy single-provider mode
+    let s = this.settings
+    if (agent.model?.trim()) s = { ...s, model: agent.model.trim() }
+    return s
   }
 
   /** Combine protocol tools with any dev tools (file ops in engineering mode). */
@@ -515,10 +544,9 @@ export class AgentRunner {
     const history = this.histories.get(agent.id) ?? []
     const systemPrompt = this.buildSystemPrompt(agent)
 
-    // Per-agent overrides: merge model and search provider into a local settings copy
-    let agentSettings = this.settings
-    if (agent.model?.trim()) agentSettings = { ...agentSettings, model: agent.model.trim() }
-    if (agent.searchProvider?.trim()) agentSettings = { ...agentSettings, searchProvider: agent.searchProvider.trim() }
+    // Per-agent overrides: merge model, provider, and search settings
+    let agentSettings = this.resolveProviderSettings(agent)
+    if (agent.searchProvider?.trim()) agentSettings = { ...agentSettings, searchProviders: [agent.searchProvider.trim()] }
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
@@ -744,6 +772,7 @@ COMMUNICATION — Use the provided tool functions:
 Your text/prose output is your analysis — it is displayed to humans with full Markdown rendering.
 Use rich Markdown: ## headers, **bold**, tables, bullet points. Make it scannable and professional.
 Actions (messaging, finishing) are done via tool calls.
+IMPORTANT: Do NOT echo or narrate your tool calls in your prose. Never write send_message(...) or mark_done(...) in your analysis text — just call the tools. Your prose should contain your thinking and analysis, not a log of function calls.
 
 Rules:
 • Call send_message() for each agent you want to contact — you may call it multiple times
@@ -777,7 +806,11 @@ QUALITY GATE — If worker data is INSUFFICIENT for a high-quality report:
 • Only produce your final report when you have enough concrete data to fill every field
 • It is BETTER to request another round of data than to produce a weak report with gaps
 
-EDITOR PASS — Before calling mark_done(), send your complete draft to the Editor agent via send_message("Editor", <your full draft>).
+VERIFICATION PASS — Before formatting, send your complete draft to the TDD Engineer via send_message("TDD Engineer", <your full draft>).
+The TDD Engineer will verify key claims and flag errors. If they report FAILs, fix those issues before proceeding.
+If the TDD Engineer is not available or does not respond within 1 round, proceed anyway.
+
+EDITOR PASS — After verification, send your draft to the Editor agent via send_message("Editor", <your full draft>).
 Wait for the Editor to return a formatted version, then call mark_done() with the Editor's output as the result.
 If the Editor is not available or does not respond within 1 round, call mark_done() with your own draft.
 ` : ''}

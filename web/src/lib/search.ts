@@ -150,17 +150,37 @@ async function searchSearXNG(query: string, settings: Settings, signal?: AbortSi
 
 // ── Dispatch ──────────────────────────────────────────────────────────────────
 
+const PROVIDER_FNS: Record<string, (q: string, s: Settings, sig?: AbortSignal) => Promise<string>> = {
+  brave:      searchBrave,
+  serper:     searchSerper,
+  tavily:     searchTavily,
+  duckduckgo: searchDuckDuckGo,
+  searxng:    searchSearXNG,
+}
+
+/**
+ * Try each configured search provider in order.
+ * If one fails, fall back to the next. Returns the first successful result.
+ */
 export async function performWebSearch(
   query: string,
   settings: Settings,
   signal?: AbortSignal,
 ): Promise<string> {
-  switch (settings.searchProvider) {
-    case 'brave':      return searchBrave(query, settings, signal)
-    case 'serper':     return searchSerper(query, settings, signal)
-    case 'tavily':     return searchTavily(query, settings, signal)
-    case 'duckduckgo': return searchDuckDuckGo(query, settings, signal)
-    case 'searxng':    return searchSearXNG(query, settings, signal)
-    default:           throw new Error('No search provider configured')
+  const providers = settings.searchProviders?.length
+    ? settings.searchProviders
+    : ['duckduckgo']
+
+  const errors: string[] = []
+  for (const id of providers) {
+    const fn = PROVIDER_FNS[id]
+    if (!fn) { errors.push(`Unknown provider: ${id}`); continue }
+    try {
+      return await fn(query, settings, signal)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      errors.push(`${id}: ${msg}`)
+    }
   }
+  throw new Error(`All search providers failed:\n${errors.join('\n')}`)
 }
