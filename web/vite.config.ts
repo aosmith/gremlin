@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { viteSingleFile } from 'vite-plugin-singlefile'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import type { Plugin } from 'vite'
 
 /**
@@ -81,11 +84,50 @@ function corsProxy(): Plugin {
   }
 }
 
+/**
+ * Auto-launch the Playwright browser sidecar in dev mode.
+ * Starts server/browser-server.mjs as a child process and
+ * tears it down when the dev server stops.
+ */
+function browserSidecar(): Plugin {
+  let child: ChildProcess | null = null
+  return {
+    name: 'browser-sidecar',
+    configureServer() {
+      const script = resolve(__dirname, 'server/browser-server.mjs')
+      if (!existsSync(script)) return
+      child = spawn(process.execPath, [script], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: resolve(__dirname),
+        env: { ...process.env },
+      })
+      child.stdout?.on('data', (d: Buffer) => {
+        const line = d.toString().trim()
+        if (line) console.log(`[browser-sidecar] ${line}`)
+      })
+      child.stderr?.on('data', (d: Buffer) => {
+        const line = d.toString().trim()
+        if (line) console.error(`[browser-sidecar] ${line}`)
+      })
+      child.on('exit', (code) => {
+        if (code && code !== 0) {
+          console.warn(`[browser-sidecar] failed to start — run "npx playwright install chromium" to enable browser tools`)
+        }
+        child = null
+      })
+    },
+    buildEnd() {
+      if (child) { child.kill(); child = null }
+    },
+  }
+}
+
 export default defineConfig({
   plugins: [
     svelte(),
     viteSingleFile(),
     corsProxy(),
+    browserSidecar(),
   ],
   build: {
     target: 'esnext',

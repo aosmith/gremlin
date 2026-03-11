@@ -130,6 +130,24 @@
     draft.searchProviders = activeSearchIds
   }
 
+  // ── Browser sidecar health check ───────────────────────────────────────
+  let sidecarHealth = $state<'idle' | 'checking' | 'ok' | 'error'>('idle')
+
+  async function checkSidecar() {
+    sidecarHealth = 'checking'
+    try {
+      const resp = await fetch('http://127.0.0.1:3131/status', { signal: AbortSignal.timeout(2000) })
+      sidecarHealth = resp.ok ? 'ok' : 'error'
+    } catch {
+      sidecarHealth = 'error'
+    }
+  }
+
+  $effect(() => {
+    if (draft.browserTools) checkSidecar()
+    else sidecarHealth = 'idle'
+  })
+
   let confirmingClear = $state(false)
 
   function clearLocalStorage() {
@@ -328,6 +346,27 @@
             bind:value={draft.searchEndpoint}
             placeholder="https://searx.be"
           />
+        </div>
+      {/if}
+
+      <!-- Browser Tools -->
+      <div class="section-divider">Browser Tools</div>
+      <label class="toggle-row">
+        <span class="toggle-switch" class:on={draft.browserTools}>
+          <input type="checkbox" bind:checked={draft.browserTools} />
+          <span class="toggle-track"><span class="toggle-knob"></span></span>
+        </span>
+        <span>Enable browser tools</span>
+      </label>
+      {#if draft.browserTools}
+        <div class="browser-hint" class:sidecar-ok={sidecarHealth === 'ok'} class:sidecar-err={sidecarHealth === 'error'} class:sidecar-checking={sidecarHealth === 'checking'}>
+          {#if sidecarHealth === 'checking'}
+            Checking sidecar...
+          {:else if sidecarHealth === 'ok'}
+            Sidecar connected at 127.0.0.1:3131
+          {:else}
+            Sidecar not reachable — start with: <code>node server/browser-server.mjs</code>
+          {/if}
         </div>
       {/if}
 
@@ -578,6 +617,73 @@
     border: 1px solid var(--glass-blue-border);
     padding: 1px 5px;
     border-radius: 3px;
+  }
+
+  /* ── Browser tools toggle ─────────────────────────────────────────────── */
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .toggle-switch {
+    position: relative;
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+  .toggle-switch input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+  .toggle-track {
+    width: 34px;
+    height: 18px;
+    border-radius: 9px;
+    background: var(--glass-border);
+    border: 1px solid var(--glass-border);
+    transition: background var(--t-fast), border-color var(--t-fast);
+    display: flex;
+    align-items: center;
+    padding: 2px;
+  }
+  .toggle-knob {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--color-text-3);
+    transition: transform var(--t-fast), background var(--t-fast);
+    transform: translateX(0);
+  }
+  .toggle-switch.on .toggle-track {
+    background: rgba(63,185,80,0.2);
+    border-color: rgba(63,185,80,0.35);
+  }
+  .toggle-switch.on .toggle-knob {
+    background: var(--color-accent);
+    transform: translateX(14px);
+  }
+  .browser-hint {
+    font-size: 12px;
+    padding: 8px 10px;
+    border-radius: var(--radius);
+  }
+  .browser-hint.sidecar-ok {
+    background: var(--glass-tinted);
+    border: 1px solid var(--glass-tinted-border);
+    color: var(--color-accent);
+  }
+  .browser-hint.sidecar-err {
+    background: rgba(255,90,90,0.06);
+    border: 1px solid rgba(255,90,90,0.2);
+    color: #f85149;
+  }
+  .browser-hint.sidecar-checking {
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    color: var(--color-text-3);
   }
 
   /* ── Search / section divider ──────────────────────────────────────────── */

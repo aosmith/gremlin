@@ -736,7 +736,7 @@ class GremlinStore {
     const tools = [
       ...(this.appMode === 'engineering' && projectFS.isOpen ? DEV_TOOLS : []),
       ...(this.settings.searchProviders?.length ? SEARCH_TOOLS : []),
-      ...BROWSER_TOOLS,
+      ...(this.settings.browserTools ? BROWSER_TOOLS : []),
     ]
 
     try {
@@ -818,7 +818,7 @@ class GremlinStore {
     const tools = [
       ...(this.appMode === 'engineering' && projectFS.isOpen ? DEV_TOOLS : []),
       ...(this.settings.searchProviders?.length ? SEARCH_TOOLS : []),
-      ...BROWSER_TOOLS,
+      ...(this.settings.browserTools ? BROWSER_TOOLS : []),
     ]
 
     try {

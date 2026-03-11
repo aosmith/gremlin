@@ -250,6 +250,8 @@ export interface Settings {
   searchEndpoint: string    // user-supplied endpoint (SearXNG)
   /** Multiple LLM providers — agents are distributed round-robin. Empty = use legacy single provider. */
   llmProviders: LLMProviderConfig[]
+  /** Enable Playwright browser tools (requires sidecar server). */
+  browserTools: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -259,10 +261,11 @@ export const DEFAULT_SETTINGS: Settings = {
   apiFormat: 'openai',
   maxRounds: 8,
   proxyUrl: '/cors-proxy',
-  searchProviders: ['searxng', 'duckduckgo'],
+  searchProviders: ['duckduckgo', 'searxng'],
   searchApiKey: '',
   searchEndpoint: 'https://searx.be',
   llmProviders: [],
+  browserTools: false,
 }
 
 // ── Search providers ──────────────────────────────────────────────────────────
