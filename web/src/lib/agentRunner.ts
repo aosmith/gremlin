@@ -802,7 +802,7 @@ Usually workers complete in one round. Choose (A) unless critical data is missin
               this.cb.onToolCall?.(e)
               const summary = e.record.isError
                 ? `✖ ${e.record.name} failed: ${e.record.result}`
-                : `🔧 ${e.record.name}(${JSON.stringify(e.record.args)}) → ${e.record.result.slice(0, 120)}`
+                : `🔧 ${e.record.name}(${JSON.stringify(e.record.args)}) → ${e.record.result.slice(0, 500)}`
               this.emit({ fromAgent: agent.id, toAgent: 'system', content: summary, type: 'system', timestamp: Date.now(), round })
             }
           },
