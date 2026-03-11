@@ -223,8 +223,8 @@ Agents also have access to protocol tools (`send_message`, `mark_done`) for prov
 │  ┌─────────────────┐    ┌────────────────────────────┐   │
 │  │  Svelte 5 UI    │───▶│  Coordinator (TypeScript)  │   │
 │  │  (TypeScript)   │◀───│  • Agent registry          │   │
-│  │                 │    │  • Message routing          │   │
-│  │  Activity       │    │  • Session state            │   │
+│  │                 │    │  • Message routing         │   │
+│  │  Activity       │    │  • Session state           │   │
 │  │  Monitor        │    └────────────────────────────┘   │
 │  │  File Tree      │                                     │
 │  │  Code Viewer    │                                     │
