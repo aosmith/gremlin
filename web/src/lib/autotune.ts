@@ -181,9 +181,13 @@ export function computeRecommendation(
   models: InstalledModel[],
   agents: AgentConfig[],
 ): TuneRecommendation {
-  // Reserve 5GB for OS + apps; on Apple Silicon unified memory this is enough
-  // since OLLAMA_NUM_CTX caps context so KV cache stays small.
-  const usableVRAM = Math.max(hardware.gpuMemoryGB - 5, hardware.gpuMemoryGB * 0.5)
+  // Use nearly all available memory — Ollama only loads one model at a time
+  // and OLLAMA_NUM_CTX caps context so KV cache stays small. Reserve just
+  // enough for the OS to stay responsive.
+  // Use full GPU/unified memory — Ollama loads one model at a time and
+  // macOS memory compression handles pressure gracefully. Unused memory
+  // is wasted capability.
+  const usableVRAM = hardware.gpuMemoryGB
   const fittingModels = models.filter(m => m.sizeGB <= usableVRAM)
   const warnings: TuneWarning[] = []
 
@@ -392,7 +396,7 @@ export function suggestModelsForHardware(
   hardware: HardwareProfile,
   installed: InstalledModel[],
 ): SuggestedModel[] {
-  const usableVRAM = hardware.gpuMemoryGB * 0.75
+  const usableVRAM = hardware.gpuMemoryGB
   const installedNames = new Set(installed.map(m => m.name))
 
   // Find the appropriate tier
@@ -446,7 +450,10 @@ export async function computeAIRecommendation(
   if (!isWebGPUAvailable()) return null
   if (models.length === 0 && cloudProviders.length === 0) return null
 
-  const usableVRAM = Math.max(hardware.gpuMemoryGB - 5, hardware.gpuMemoryGB * 0.5)
+  // Use full GPU/unified memory — Ollama loads one model at a time and
+  // macOS memory compression handles pressure gracefully. Unused memory
+  // is wasted capability.
+  const usableVRAM = hardware.gpuMemoryGB
 
   // Gather all agents from all builtin modes
   const modeAgents: { mode: string; modeName: string; agents: { id: string; name: string; role: string; roleClass: AgentRoleClass }[] }[] = []
@@ -504,19 +511,21 @@ export async function computeAIRecommendation(
     modelSection += `\nCLOUD MODELS (API providers, no VRAM constraint):\n${cloudInfo}\n`
   }
 
-  const prompt = `You are an AI model assignment optimizer. Given hardware specs, available models (local + cloud), and agent definitions across multiple modes, assign the BEST model to each agent.
+  const prompt = `You are an AI model assignment optimizer. Given hardware specs, available models (local + cloud), and agent definitions across multiple modes, assign the BEST and LARGEST model to each agent.
 
 HARDWARE:
 - GPU: ${hardware.gpuName}
 - Total Memory: ${hardware.totalMemoryGB}GB
-- Usable VRAM: ${usableVRAM.toFixed(1)}GB (after OS overhead)
+- Available VRAM: ${usableVRAM.toFixed(1)}GB
 - CPU Cores: ${hardware.cpuCores}
 - Platform: ${hardware.platform}/${hardware.arch}
 
+MEMORY PHILOSOPHY: Maximize model quality by using the largest, most capable models available. Ollama loads ONE model at a time — the full ${hardware.totalMemoryGB}GB of unified memory is available for each model load. The OS handles memory pressure via compression and swap. A 20GB model on a ${hardware.totalMemoryGB}GB system is totally fine. Even models that are 90%+ of total memory will run. Unused memory is wasted capability — always pick the biggest model that could possibly fit.
+
 CONSTRAINTS:
-- Local Ollama models load ONE at a time into VRAM (MAX_LOADED_MODELS=1). Model swapping takes 10-30 seconds. Minimize distinct local models per mode.
-- Cloud models have NO VRAM cost and support unlimited parallel calls. Prefer cloud models for roles needing high quality or when local VRAM is limited.
-- If both local and cloud models are available, use cloud for quality-critical roles (reasoning, synthesis) and local for latency-sensitive roles (orchestrator) or when privacy matters.
+- Ollama loads ONE model at a time (MAX_LOADED_MODELS=1). Swapping takes 10-30s. Minimize distinct local models per mode to reduce swaps.
+- Cloud models have NO VRAM cost and support unlimited parallel calls.
+- If both local and cloud are available, use cloud for quality-critical roles (reasoning, synthesis) and local for latency-sensitive roles (orchestrator).
 
 AVAILABLE MODELS:
 ${modelSection}
@@ -532,11 +541,12 @@ AGENTS BY MODE:
 ${modeInfo}
 
 RULES:
-1. Match model strengths to role classes
-2. Minimize distinct LOCAL models per mode to reduce swap overhead
-3. Cloud models can be used freely without swap penalty
-4. Every agent MUST get a model assignment — use exact model names from the lists above
-5. Pick ONE global default model (the best all-rounder from any source)
+1. Always prefer the LARGEST, most capable model that fits for each role
+2. Match model strengths to role classes — pick specialists over generalists
+3. Minimize distinct LOCAL models per mode to reduce swap overhead
+4. Cloud models can be used freely without swap penalty
+5. Every agent MUST get a model assignment — use exact model names from the lists above
+6. Pick ONE global default model (the best all-rounder from any source)
 
 Respond with ONLY valid JSON, no other text:
 {

@@ -43,7 +43,7 @@
   let modeAssignments = $state<ModeAssignment[]>([])
   let expandedMode = $state<string | null>(null)
 
-  const usableVRAM = $derived(hardware ? Math.round(hardware.gpuMemoryGB * 0.75 * 10) / 10 : 0)
+  const usableVRAM = $derived(hardware ? hardware.gpuMemoryGB : 0)
   const activeRec = $derived(aiRecommendation ?? recommendation)
   const totalChanges = $derived(modeAssignments.reduce((sum, m) => sum + m.changeCount, 0))
 
@@ -269,7 +269,7 @@
               <span class="hw-value">{hardware.totalMemoryGB} GB</span>
             </div>
             <div class="hw-card">
-              <span class="hw-label">Usable VRAM</span>
+              <span class="hw-label">Model Budget</span>
               <span class="hw-value accent">{usableVRAM} GB</span>
             </div>
             <div class="hw-card">
@@ -311,7 +311,7 @@
               <span class="hw-value">{hardware.totalMemoryGB} GB</span>
             </div>
             <div class="hw-card">
-              <span class="hw-label">Usable VRAM</span>
+              <span class="hw-label">Model Budget</span>
               <span class="hw-value accent">{usableVRAM} GB</span>
             </div>
             <div class="hw-card">
