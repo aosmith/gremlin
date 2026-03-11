@@ -32,7 +32,7 @@ Once you have a provider ready, open GREMLIN → **Settings** (⚙) → pick you
 | 🤝 **Collaborative agents** | Agents have individual system prompts and message each other autonomously |
 | 🔍 **Full visibility** | Every inter-agent message is shown in real time — nothing hidden |
 | 💬 **Human-in-the-loop** | Click any agent during a run to read its thread and inject instructions |
-| 🗂 **7 built-in modes** | General · Engineering · Finance · Industrial · Biomedical · Medicine · Networking |
+| 🗂 **7 built-in modes** | General · Engineering · Finance · Industrial · Medicine · Networking · Prediction Markets |
 | ⚙ **Dev mode** | Engineering agents write real files to your disk via the File System Access API |
 | 🔎 **Web search** | DuckDuckGo out of the box — or configure Brave, Serper, Tavily, SearXNG |
 | 🌐 **WebLLM** | Run quantised models entirely in the browser via WebGPU — no server or key needed |
@@ -92,13 +92,13 @@ Switch modes with the tab bar below the navbar. Each mode loads a different set 
 
 | Mode | Agents | Use for |
 |---|---|---|
-| **General** 🌐 | CEO · Researcher · Analyst · Critic · Writer · Chief of Staff | Research, writing, analysis |
-| **Engineering** ⚙ | CTO · Frontend Dev · Backend Dev · Full-Stack Dev · DevOps · QA · Security · Simplicity Eng · Staff Engineer | Software projects |
-| **Finance** 📈 | Capital Allocator · Value Analyst · Activist Analyst · Risk Manager · Sector Analyst · News & Sentiment · Investment Strategist | Investment research |
-| **Industrial** 🏭 | General Manager · Manufacturing Eng · Operations Manager · Supply Chain · Quality Eng · Commercial Manager · Plant Controller | Manufacturing, operations & supply chain |
-| **Biomedical** 🧬 | Chief Dev Officer · Research Scientist · Regulatory Affairs · Clinical Affairs · CMC · Quality & Compliance · Pharmacovigilance · Program Director | Drug & device development |
+| **General** 🌐 | CEO · Researcher · Analyst · Critic · Writer · TDD Engineer · Editor · Chief of Staff | Research, writing, analysis |
+| **Engineering** ⚙ | CTO · Frontend Dev · Backend Dev · Full-Stack Dev · DevOps Eng · QA Engineer · Security Eng · Simplicity Eng · TDD Engineer · Editor · Staff Engineer | Software projects |
+| **Finance** 📈 | Capital Allocator · Value Analyst · Quant Analyst · Filings Analyst · Risk Manager · Sector Analyst · TDD Engineer · Editor · Investment Strategist | Investment research |
+| **Industrial** 🏭 | General Manager · Manufacturing Eng · Operations Manager · Supply Chain · Quality Engineer · Commercial Manager · TDD Engineer · Editor · Plant Controller | Manufacturing, operations & supply chain |
 | **Medicine** 🩺 | Attending Physician · Internist · Radiologist · Lab Medicine · Clinical Pharmacist · Nurse Practitioner · Chief of Medicine | Clinical reasoning, diagnosis, treatment |
-| **Networking** 📡 | NOC Director · Transport Eng · IP/MPLS Eng · Voice/UC Eng · RF/Wireless Eng · Security Analyst · Service Assurance Lead | Telecom NOC, triage, routing |
+| **Networking** 📡 | NOC Director · Transport Engineer · IP/MPLS Engineer · Voice/UC Engineer · RF/Wireless Engineer · Security Analyst · TDD Engineer · Editor · Service Assurance Lead | Telecom NOC, triage, routing |
+| **Prediction Markets** 🔮 | Market Strategist · Probability Modeler · News Scanner · Whale Tracker · Arbitrage Analyst · Risk Assessor · TDD Engineer · Editor · Trade Architect | Forecasting, prediction markets |
 | **+ New Mode** | Snapshot of your current agents | Any custom team |
 
 Click **+ New Mode** to save your current agent configuration as a named mode. Custom modes can be deleted; the seven built-in ones cannot.
@@ -118,6 +118,23 @@ When the **Engineering** mode is active, a **📁 Open Folder** button appears i
 Tool calls appear as messages in the Activity Monitor. Written files show up in a **file tree** in the left sidebar; click any file to open it in the **code viewer** panel.
 
 > The File System Access API requires Chrome 86+ or Edge 86+. Firefox does not support it.
+
+---
+
+## Browser tools
+
+Agents can interact with a live browser when a sidecar server is running at `http://127.0.0.1:3131`:
+
+| Tool | Description |
+|---|---|
+| `browse_navigate(url)` | Navigate to a URL; returns page title and HTTP status |
+| `browse_content(selector?)` | Extract text from the current page or a specific element |
+| `browse_click(selector)` | Click an element by CSS selector |
+| `browse_type(selector, text)` | Type into an input field; optionally submit |
+| `browse_evaluate(script)` | Run JavaScript in the page context |
+| `browse_assert(checks)` | Assert conditions about elements; returns PASS/FAIL |
+| `browse_links()` | List all links on the current page |
+| `browse_wait(selector)` | Wait for an element to appear (up to 10s) |
 
 ---
 
@@ -161,7 +178,8 @@ Select **WebLLM 🌐** in Settings to run a quantised model entirely in your bro
 | `Llama-3.2-1B-Instruct-q4f16_1-MLC` | ~800 MB | Small, fast |
 | `Llama-3.2-3B-Instruct-q4f16_1-MLC` | ~2 GB | Good balance (default) |
 | `Qwen2.5-3B-Instruct-q4f16_1-MLC` | ~2 GB | Strong at reasoning |
-| `Phi-3.5-mini-instruct-q4f16_1-MLC` | ~2 GB | Microsoft's compact model |
+| `Phi-3-mini-4k-instruct-q4f16_1-MLC` | ~2 GB | Microsoft's compact model |
+| `Phi-3.5-mini-instruct-q4f16_1-MLC` | ~2 GB | Microsoft's newer compact model |
 | `gemma-2-2b-it-q4f16_1-MLC` | ~1.5 GB | Google's 2B model |
 | `Qwen2.5-7B-Instruct-q4f16_1-MLC` | ~4 GB | Higher quality |
 | `Mistral-7B-Instruct-v0.3-q4f16_1-MLC` | ~4 GB | Strong general-purpose |
@@ -268,7 +286,11 @@ gremlin/
 │   │   │   ├── tools.ts            # Tool definitions + executor (dev/search/protocol)
 │   │   │   ├── webllm.ts           # WebLLM / WebGPU wrapper
 │   │   │   ├── cleanContent.ts     # Protocol JSON → readable display text
-│   │   │   └── tableCards.ts       # Prose enhancement (tables, callouts)
+│   │   │   ├── tableCards.ts       # Prose enhancement (tables, callouts)
+│   │   │   ├── sanitize.ts        # DOMPurify XSS sanitization wrapper
+│   │   │   ├── search.ts          # Web search implementation
+│   │   │   ├── teamGenerator.ts   # Dynamic team generation
+│   │   │   └── headless.ts        # Headless browser integration
 │   │   └── components/
 │   │       ├── ActivityMonitor.svelte  # Real-time message feed
 │   │       ├── AgentCard.svelte        # Sidebar agent widget
