@@ -400,9 +400,11 @@ function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[], si
     messages,
     stream,
   }
-  // Keep Ollama models loaded for 24h to avoid costly cold-start reloads
+  // Ollama: keep models loaded briefly to avoid cold-starts within a run,
+  // but short enough that memory is freed for the next model swap.
+  // Context window is capped via OLLAMA_NUM_CTX env var (set by npm run dev).
   if (settings.apiEndpoint.includes('localhost:11434') || settings.apiEndpoint.includes('127.0.0.1:11434')) {
-    body.keep_alive = '24h'
+    body.keep_alive = '5m'
   }
   if (tools?.length) {
     body.tools = tools
@@ -698,6 +700,90 @@ export async function fetchOllamaModels(baseUrl: string): Promise<string[]> {
   if (!resp.ok) throw new Error(`${resp.status}`)
   const data = await resp.json()
   return ((data.models ?? []) as Array<{ name: string }>).map((m) => m.name).sort()
+}
+
+/**
+ * Pull an Ollama model, streaming progress to a callback.
+ * Resolves when pull is complete; rejects on error.
+ */
+export async function pullOllamaModel(
+  baseUrl: string,
+  model: string,
+  onProgress?: (status: string, pct: number | null) => void,
+): Promise<void> {
+  const base = baseUrl.replace(/\/v1.*$/, '')
+  const resp = await fetch(`${base}/api/pull`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model, stream: true }),
+  })
+  if (!resp.ok) throw new Error(`Pull ${model}: HTTP ${resp.status}`)
+  const reader = resp.body?.getReader()
+  if (!reader) throw new Error('No response body')
+  const decoder = new TextDecoder()
+  let buf = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const j = JSON.parse(line)
+        const pct = j.total ? Math.round((j.completed ?? 0) / j.total * 100) : null
+        onProgress?.(j.status ?? '', pct)
+        if (j.error) throw new Error(j.error)
+      } catch (e) {
+        if (e instanceof SyntaxError) continue
+        throw e
+      }
+    }
+  }
+}
+
+/**
+ * Check which models from a list are missing in Ollama and pull them.
+ * Returns the list of models that were pulled.
+ */
+export async function ensureOllamaModels(
+  baseUrl: string,
+  needed: string[],
+  onProgress?: (model: string, status: string, pct: number | null) => void,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  if (needed.length === 0) return []
+  let installed: string[]
+  try {
+    installed = await fetchOllamaModels(baseUrl)
+  } catch {
+    return [] // Ollama not reachable — skip check, let the LLM call fail naturally
+  }
+
+  // Normalize: Ollama tags may include ":latest" implicitly
+  const installedSet = new Set(installed)
+  const missing = needed.filter((m) => {
+    if (installedSet.has(m)) return false
+    // Also check with :latest suffix
+    if (!m.includes(':') && installedSet.has(`${m}:latest`)) return false
+    return true
+  })
+
+  if (missing.length === 0) return []
+
+  const pulled: string[] = []
+  for (const model of missing) {
+    if (signal?.aborted) break
+    try {
+      await pullOllamaModel(baseUrl, model, (status, pct) => onProgress?.(model, status, pct))
+      pulled.push(model)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      onProgress?.(model, `error: ${msg}`, null)
+    }
+  }
+  return pulled
 }
 
 export async function fetchOpenAIModels(endpoint: string, apiKey: string): Promise<string[]> {

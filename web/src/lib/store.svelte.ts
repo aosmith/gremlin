@@ -44,7 +44,11 @@ function loadSettings(): Settings  {
 }
 function saveSettings(s: Settings) { lsSet('gremlin_settings', s) }
 
-function loadMode(): AppMode  { return ls<AppMode>('gremlin_mode', 'general') }
+function loadMode(): AppMode  {
+  // Default to 'tuning' on first visit so users configure their hardware
+  const hasVisited = localStorage.getItem('gremlin_mode')
+  return hasVisited ? ls<AppMode>('gremlin_mode', 'general') : 'tuning'
+}
 function saveMode(m: AppMode) { lsSet('gremlin_mode', m) }
 
 // ── Builtin preset versioning ────────────────────────────────────────────────
@@ -302,7 +306,11 @@ class GremlinStore {
   // ── Mode helpers ──────────────────────────────────────────────────────────
 
   get allModes(): ModeInfo[] {
-    return [...BUILTIN_MODES, ...this.customModes]
+    // Hide tuning from mode tabs unless currently active
+    const builtins = this.appMode === 'tuning'
+      ? BUILTIN_MODES
+      : BUILTIN_MODES.filter(m => m.id !== 'tuning')
+    return [...builtins, ...this.customModes]
   }
 
   get currentModeInfo(): ModeInfo {

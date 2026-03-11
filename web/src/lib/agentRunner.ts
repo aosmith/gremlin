@@ -10,7 +10,7 @@
  * In engineering mode (tools provided) agents can call write_file / read_file / list_directory.
  */
 
-import { callLLMWithTools } from './api'
+import { callLLMWithTools, ensureOllamaModels } from './api'
 import type { ToolCallEvent, StreamCallback } from './api'
 import type { OAITool, ToolExecutor, ToolCallRecord } from './tools'
 import { PROTOCOL_TOOLS, PROTOCOL_TOOL_NAMES, executeTool } from './tools'
@@ -135,6 +135,59 @@ export class AgentRunner {
     return s
   }
 
+  /**
+   * Collect all Ollama models needed by agents + global settings, then pull any missing ones.
+   * Only runs when the endpoint looks like a local Ollama instance.
+   */
+  private async ensureMissingModels(): Promise<void> {
+    // Detect Ollama endpoint (default or from providers)
+    const ollamaEndpoints = new Set<string>()
+    const modelsByEndpoint = new Map<string, Set<string>>()
+
+    const addModel = (endpoint: string, model: string) => {
+      if (!model?.trim()) return
+      if (!endpoint.includes('localhost:11434') && !endpoint.includes('127.0.0.1:11434')) return
+      ollamaEndpoints.add(endpoint)
+      let set = modelsByEndpoint.get(endpoint)
+      if (!set) { set = new Set(); modelsByEndpoint.set(endpoint, set) }
+      set.add(model.trim())
+    }
+
+    // Global/legacy model
+    addModel(this.settings.apiEndpoint, this.settings.model)
+
+    // Multi-provider models
+    for (const p of this.settings.llmProviders ?? []) {
+      addModel(p.endpoint, p.model)
+    }
+
+    // Per-agent model overrides (resolve against whatever endpoint they'd use)
+    for (const agent of this.agents) {
+      if (!agent.model?.trim()) continue
+      const s = this.resolveProviderSettings(agent)
+      addModel(s.apiEndpoint, agent.model.trim())
+    }
+    // Reset round-robin counter since resolveProviderSettings incremented it
+    this.providerIndex = 0
+
+    for (const [endpoint, models] of modelsByEndpoint) {
+      const needed = [...models]
+      this.cb.onLog(`Checking ${needed.length} model${needed.length > 1 ? 's' : ''} in Ollama…`)
+      const pulled = await ensureOllamaModels(
+        endpoint,
+        needed,
+        (model, status, pct) => {
+          const pctStr = pct != null ? ` ${pct}%` : ''
+          this.cb.onLog(`⬇ Pulling ${model}: ${status}${pctStr}`)
+        },
+        this.abortController.signal,
+      )
+      if (pulled.length > 0) {
+        this.cb.onLog(`Pulled ${pulled.length} model${pulled.length > 1 ? 's' : ''}: ${pulled.join(', ')}`)
+      }
+    }
+  }
+
   /** Combine protocol tools with any dev tools (file ops in engineering mode). */
   private buildAllTools(): OAITool[] {
     return [...PROTOCOL_TOOLS, ...this.tools]
@@ -198,6 +251,9 @@ export class AgentRunner {
     this.emit({ fromAgent: 'user', toAgent: orchestrator.id, content: task, type: 'task', timestamp: Date.now(), round: 0 })
 
     callbacks.onLog(`Session started${tools.length ? ' (dev mode — file tools enabled)' : ''}`)
+
+    // Pre-flight: pull any missing Ollama models before starting the agent loop
+    await this.ensureMissingModels()
 
     await this.runLoop()
 

@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { viteSingleFile } from 'vite-plugin-singlefile'
-import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { spawn, execSync, type ChildProcess } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { Plugin } from 'vite'
 
@@ -122,12 +122,111 @@ function browserSidecar(): Plugin {
   }
 }
 
+/**
+ * Auto-start Ollama with OLLAMA_NUM_CTX capped to prevent KV cache
+ * from consuming all memory on machines with limited unified memory.
+ * Kills any existing Ollama process first so the env var takes effect.
+ */
+function ollamaSidecar(): Plugin {
+  let child: ChildProcess | null = null
+  return {
+    name: 'ollama-sidecar',
+    configureServer() {
+      // Check if ollama binary is available
+      const which = spawn('which', ['ollama'], { stdio: 'pipe' })
+      which.on('close', (code) => {
+        if (code !== 0) {
+          console.log('[ollama-sidecar] ollama not found — skipping')
+          return
+        }
+        // Kill existing Ollama instances so we can restart with our env
+        spawn('pkill', ['-f', 'ollama'], { stdio: 'ignore' }).on('close', () => {
+          setTimeout(() => {
+            child = spawn('ollama', ['serve'], {
+              stdio: ['ignore', 'pipe', 'pipe'],
+              env: { ...process.env, OLLAMA_NUM_CTX: '8192' },
+            })
+            child.stdout?.on('data', (d: Buffer) => {
+              const line = d.toString().trim()
+              if (line) console.log(`[ollama-sidecar] ${line}`)
+            })
+            child.stderr?.on('data', (d: Buffer) => {
+              const line = d.toString().trim()
+              if (line && !line.includes('already in use')) console.log(`[ollama-sidecar] ${line}`)
+            })
+            child.on('exit', () => { child = null })
+            console.log('[ollama-sidecar] started with OLLAMA_NUM_CTX=8192')
+          }, 1000) // brief delay for old process to die
+        })
+      })
+    },
+    buildEnd() {
+      if (child) { child.kill(); child = null }
+    },
+  }
+}
+
+/**
+ * Expose system hardware info (RAM, GPU, CPU) via GET /api/system-info.
+ */
+function systemInfo(): Plugin {
+  return {
+    name: 'system-info',
+    configureServer(server) {
+      server.middlewares.use('/api/system-info', (_req, res) => {
+        try {
+          const info = {
+            platform: process.platform,
+            arch: process.arch,
+            totalMemoryGB: 0,
+            gpuName: 'Unknown',
+            gpuMemoryGB: 0,
+            cpuCores: 0,
+          }
+
+          if (process.platform === 'darwin') {
+            const memBytes = parseInt(execSync('sysctl -n hw.memsize', { encoding: 'utf8' }).trim(), 10)
+            info.totalMemoryGB = Math.round(memBytes / (1024 ** 3) * 10) / 10
+            info.cpuCores = parseInt(execSync('sysctl -n hw.ncpu', { encoding: 'utf8' }).trim(), 10)
+            try {
+              const gpuJson = JSON.parse(execSync('system_profiler SPDisplaysDataType -json', { encoding: 'utf8' }))
+              const card = gpuJson.SPDisplaysDataType?.[0]
+              info.gpuName = card?.sppci_model ?? card?.chipset_model ?? 'Unknown'
+            } catch { /* no GPU info */ }
+            // Apple Silicon: unified memory, VRAM = total RAM
+            info.gpuMemoryGB = info.totalMemoryGB
+          } else if (process.platform === 'linux') {
+            const meminfo = readFileSync('/proc/meminfo', 'utf8')
+            const match = meminfo.match(/MemTotal:\s+(\d+)\s+kB/)
+            if (match) info.totalMemoryGB = Math.round(parseInt(match[1], 10) / (1024 ** 2) * 10) / 10
+            info.cpuCores = parseInt(execSync('nproc', { encoding: 'utf8' }).trim(), 10)
+            try {
+              const nv = execSync('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits', { encoding: 'utf8' }).trim()
+              const [name, mem] = nv.split(', ')
+              info.gpuName = name
+              info.gpuMemoryGB = Math.round(parseInt(mem, 10) / 1024 * 10) / 10
+            } catch { /* no nvidia GPU */ }
+          }
+
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(info))
+        } catch (err: unknown) {
+          res.writeHead(500, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+        }
+      })
+    },
+  }
+}
+
 export default defineConfig({
   plugins: [
     svelte(),
     viteSingleFile(),
     corsProxy(),
     browserSidecar(),
+    ollamaSidecar(),
+    systemInfo(),
   ],
   build: {
     target: 'esnext',

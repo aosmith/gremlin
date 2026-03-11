@@ -14,6 +14,7 @@
   import NewModeModal from './components/NewModeModal.svelte'
   import SessionHistory from './components/SessionHistory.svelte'
   import HelpModal from './components/HelpModal.svelte'
+  import TuningView from './components/TuningView.svelte'
   import { formatOutputAsMarkdown, cleanOutputForCopy } from './lib/cleanContent'
   import { enhanceProse } from './lib/tableCards'
   import { sanitizeHtml } from './lib/sanitize'
@@ -31,6 +32,7 @@
       : null,
   )
 
+  const isTuning = $derived(store.appMode === 'tuning')
   const isEngineering = $derived(store.appMode === 'engineering')
 
   // Right panel: prefer code viewer in engineering mode when a file is selected
@@ -492,6 +494,9 @@
   {/if}
 
   <!-- ── Main workspace ── -->
+  {#if isTuning}
+    <TuningView />
+  {:else}
   <div class="workspace">
 
     <!-- Left sidebar: agents + (in engineering mode) file tree -->
@@ -602,7 +607,7 @@
       </div>
     {/if}
   </div>
-
+  {/if}
 
 </div>
 

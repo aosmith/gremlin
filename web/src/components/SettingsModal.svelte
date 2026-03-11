@@ -95,6 +95,11 @@
       }
       discoveredModels[lp.id] = models
       fetchStatuses[lp.id] = 'ok'
+      // Default to first model if current selection is blank
+      if (models.length > 0 && !lp.model.trim()) {
+        const idx = activeLLM.findIndex(p => p.id === lp.id)
+        if (idx >= 0) updateProvider(idx, { model: models[0] })
+      }
     } catch (e) {
       fetchErrors[lp.id] = e instanceof Error ? e.message : String(e)
       fetchStatuses[lp.id] = 'error'
@@ -368,6 +373,15 @@
             Sidecar not reachable — start with: <code>node server/browser-server.mjs</code>
           {/if}
         </div>
+      {/if}
+
+      <!-- Hardware Setup (hidden during onboarding) -->
+      {#if store.appMode !== 'tuning'}
+        <div class="section-divider">Hardware</div>
+        <button
+          class="ghost setup-btn"
+          onclick={() => { onclose(); store.switchMode('tuning') }}
+        >Re-run setup</button>
       {/if}
 
       <!-- Advanced -->
@@ -670,4 +684,16 @@
   }
   .danger:hover { background: rgba(248,81,73,0.25); }
   .danger-text { color: #f85149; }
+  .setup-btn {
+    font-size: 12px;
+    width: 100%;
+    text-align: left;
+    padding: 8px 12px;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius);
+    background: var(--glass);
+    color: var(--color-text-2);
+    cursor: pointer;
+  }
+  .setup-btn:hover { color: var(--color-accent); border-color: rgba(63,185,80,0.3); }
 </style>

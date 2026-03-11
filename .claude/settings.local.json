@@ -5,9 +5,23 @@
       "Bash(npm:*)",
       "Bash(npx playwright:*)",
       "Bash(screencapture:*)",
-      "Bash(ollama list:*)",
-      "Bash(ollama pull:*)",
-      "Bash(curl:*)"
+      "Bash(ollama:*)",
+      "Bash(curl:*)",
+      "Bash(pkill:*)",
+      "Bash(pgrep:*)",
+      "Bash(kill:*)",
+      "Bash(open:*)",
+      "Bash(osascript:*)",
+      "Bash(lsof:*)",
+      "WebFetch(domain:ollama.com)",
+      "Bash(curl -s http://localhost:11434/api/chat -d '{\"model\":\"qwen3:30b\",\"messages\":[{\"role\":\"user\",\"content\":\"say hi\"}],\"options\":{\"num_ctx\":8192},\"stream\":false}' --max-time 120 2>&1 | python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d.get\\('message',{}\\).get\\('content',''\\)[:100]\\)\")",
+      "Bash(curl -s http://localhost:11434/api/ps 2>&1 | python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); m=d['models'][0]; print\\(f'context_length: {m[\\\\\"context_length\\\\\"]}, size: {m[\\\\\"size\\\\\"]/1e9:.1f}GB'\\)\")",
+      "Bash(curl -s http://localhost:11434/api/generate -d '{\"model\":\"qwen3:30b\",\"keep_alive\":0}' && sleep 5 && curl -s http://localhost:11434/api/ps 2>&1 | python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('models loaded:', len\\(d['models']\\)\\)\")",
+      "Bash(curl -s http://localhost:11434/api/ps 2>&1 | python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); m=d['models'][0]; print\\(f'context_length: {m[\\\\\"context_length\\\\\"]}, size: {m[\\\\\"size\\\\\"]/1e9:.1f}GB, vram: {m[\\\\\"size_vram\\\\\"]/1e9:.1f}GB'\\)\")",
+      "Bash(curl -s http://localhost:11434/v1/chat/completions -H \"Content-Type: application/json\" -d '{\"model\":\"qwen3:30b\",\"messages\":[{\"role\":\"user\",\"content\":\"say hi in one word\"}],\"max_tokens\":10}' --max-time 120 2>&1 | python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d['choices'][0]['message']\\)\")",
+      "Bash(npx tsc:*)",
+      "Bash(curl -s http://localhost:5173/api/system-info 2>&1 | python3 -m json.tool)",
+      "Bash(curl -s http://localhost:11434/api/tags 2>&1 | python3 -c \"\nimport sys,json\nd=json.load\\(sys.stdin\\)\nfor m in d['models']:\n    print\\(f'{m[\\\\\"name\\\\\"]:30s} {m[\\\\\"size\\\\\"]/1e9:.1f} GB'\\)\n\")"
     ]
   }
 }
