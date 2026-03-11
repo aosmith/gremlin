@@ -947,6 +947,8 @@ Usually workers complete in one round. Choose (A) unless critical data is missin
 
     const hasDevTools = this.tools.some((t) => t.function.name === 'write_file')
     const hasSearchTools = this.tools.some((t) => t.function.name === 'web_search')
+    // Financial mode: any agent has ticker rules in its prompt (finance + general modes)
+    const isFinancialMode = Array.from(this.configs.values()).some(a => a.systemPrompt.includes('$ prefix') || a.systemPrompt.includes('ticker'))
 
     const devToolSection = hasDevTools ? `
 File system tools also available:
@@ -1015,17 +1017,17 @@ ${agent.role === 'synthesizer' ? `
 SYNTHESIZER INSTRUCTIONS — When you call mark_done(result), the "result" is shown directly to a human user.
 Follow the output format specified in YOUR system prompt above. If your prompt says to output JSON, output JSON. If not, use rich Markdown.
 Be COMPREHENSIVE and THOROUGH. Include:
-• ALL specific data from workers — names, numbers, tickers, percentages, dollar amounts, rankings, scores, etc.
+• ALL specific data from workers — names, numbers, ${isFinancialMode ? 'tickers, ' : ''}percentages, dollar amounts, rankings, scores, etc.
 • Full analysis and reasoning, not just conclusions
 • Actionable recommendations with concrete details
 • Trade-offs, caveats, and areas of uncertainty
-CRITICAL: You MUST include every concrete data point the workers provided. If workers listed tickers, include ALL tickers.
+CRITICAL: You MUST include every concrete data point the workers provided.${isFinancialMode ? ' If workers listed tickers, include ALL tickers.' : ''}
 If workers provided numbers, include ALL numbers. Never replace specific data with vague summaries.
 Do NOT say "based on the analysis" or "as discussed" — include the ACTUAL data inline.
 Do NOT summarise briefly — the user wants depth. Aim for a complete, detailed report.
 
 QUALITY GATE — If worker data is INSUFFICIENT for a high-quality report:
-• Send messages back to specific workers requesting the missing data (e.g. "Need current P/E and price for $AAPL — please web_fetch Finviz")
+• Send messages back to specific workers requesting the missing data${isFinancialMode ? ' (e.g. "Need current P/E and price for $AAPL — please web_fetch Finviz")' : ''}
 • Do NOT call mark_done() yet — wait for the additional data
 • Only produce your final report when you have enough concrete data to fill every field
 • It is BETTER to request another round of data than to produce a weak report with gaps
@@ -1045,16 +1047,17 @@ WORKER INSTRUCTIONS — You can collaborate directly with other workers listed a
 • Only call mark_done() when YOUR work is fully complete and you are NOT waiting on any peer response.
 • Keep peer exchanges focused — one or two rounds of back-and-forth at most.
 • Do NOT message peers just to be polite — only when it adds concrete value (shared data, dependency, contradiction).
-
+${isFinancialMode ? `
 When sending data to OTHER AGENTS via send_message(), include structured data so they can parse it easily.
 For financial data, include a JSON block in your message:
 \`\`\`json
 {"tickers": [{"symbol": "$AAPL", "price": 185.23, "pe": 29.1, ...}]}
-\`\`\`
+\`\`\`` : `
+When sending data to OTHER AGENTS via send_message(), include structured data so they can parse it easily.`}
 
 CRITICAL OUTPUT RULE: Always produce CONCRETE, SPECIFIC output — real data, names, numbers, lists, calculations.
 Never describe what you "would do" or outline steps. Actually DO the work and report the results.` : ''}
-${roundBudget}${agent.systemPrompt.includes('$ prefix') ? `
+${roundBudget}${isFinancialMode ? `
 
 OUTPUT FORMAT REMINDER — MANDATORY:
 Every stock or company ticker MUST have a $ prefix: $AAPL, $MSFT, $NVDA, $GOOG.
