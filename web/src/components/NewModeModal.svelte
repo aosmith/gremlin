@@ -146,7 +146,7 @@
               <div class="agent-row">
                 <span class="color-dot" style="background:{agent.color}"></span>
                 <span class="agent-name">{agent.name}</span>
-                <span class="role-badge role-badge--{agent.role}">{roleBadge(agent.role)}</span>
+                <span class="badge badge-pill {agent.role === 'orchestrator' ? 'badge-accent' : agent.role === 'synthesizer' ? 'badge-default' : 'badge-info'}">{roleBadge(agent.role)}</span>
               </div>
             {/each}
           </div>
@@ -158,7 +158,7 @@
           {#if showPrompts}
             <div class="prompts-panel">
               {#each team.agents as agent}
-                <div class="prompt-block">
+                <div class="glass-panel">
                   <div class="prompt-agent">{agent.name}</div>
                   <div class="prompt-text">{agent.systemPrompt}</div>
                 </div>
@@ -277,28 +277,6 @@
   }
 
   /* ── Generate tab ──────────────────────────────────────────────────────── */
-  textarea {
-    width: 100%;
-    background: var(--glass);
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius);
-    color: var(--color-text);
-    font: inherit;
-    font-size: 13px;
-    padding: 10px 12px;
-    resize: vertical;
-    line-height: 1.5;
-  }
-  textarea:focus {
-    outline: none;
-    border-color: var(--color-accent);
-    box-shadow: 0 0 0 1px var(--color-accent);
-  }
-  textarea:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
   .warning-banner {
     font-size: 12px;
     color: var(--color-accent-warn);
@@ -386,29 +364,7 @@
     flex: 1;
     color: var(--color-text);
   }
-  .role-badge {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    padding: 2px 8px;
-    border-radius: 99px;
-    font-weight: 600;
-  }
-  .role-badge--orchestrator {
-    color: var(--color-accent);
-    background: var(--glass-tinted);
-    border: 1px solid var(--glass-tinted-border);
-  }
-  .role-badge--synthesizer {
-    color: var(--color-accent-3);
-    background: rgba(188, 140, 255, 0.06);
-    border: 1px solid rgba(188, 140, 255, 0.18);
-  }
-  .role-badge--worker {
-    color: var(--color-accent-2);
-    background: var(--glass-blue);
-    border: 1px solid var(--glass-blue-border);
-  }
+  .badge-pill { border-radius: 99px; }
 
   .expand-btn {
     font-size: 12px;
@@ -424,12 +380,6 @@
     margin-top: 8px;
     max-height: 240px;
     overflow-y: auto;
-  }
-  .prompt-block {
-    background: var(--glass);
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius);
-    padding: 10px 12px;
   }
   .prompt-agent {
     font-size: 11px;

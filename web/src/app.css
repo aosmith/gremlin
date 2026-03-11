@@ -311,3 +311,280 @@ select   { cursor: pointer; }
 .field label  { font-size: 11px; color: var(--color-text-3); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; }
 .field small  { font-size: 11px; color: var(--color-text-4); line-height: 1.5; }
 .field code   { font-family: var(--font-mono); font-size: 10.5px; color: var(--color-accent-2); background: var(--glass-blue); border: 1px solid var(--glass-blue-border); padding: 1px 5px; border-radius: 3px; }
+
+/* ── Retry button ─────────────────────────────────────────────────────────── */
+.btn-retry {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(255,90,90,0.3);
+  background: rgba(255,90,90,0.08);
+  color: var(--color-accent-err);
+  cursor: pointer;
+  height: auto;
+  line-height: 1.4;
+  transition: all var(--t-fast);
+  flex-shrink: 0;
+}
+.btn-retry:hover {
+  background: rgba(255,90,90,0.18);
+  border-color: rgba(255,90,90,0.5);
+}
+
+/* ── Badges ───────────────────────────────────────────────────────────────── */
+.badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  flex-shrink: 0;
+}
+.badge-default { background: var(--color-surface-3); color: var(--color-text-3); }
+.badge-accent  { background: rgba(63,185,80,0.2);   color: var(--color-accent); }
+.badge-warn    { background: rgba(210,153,34,0.2);   color: var(--color-accent-warn); }
+.badge-error   { background: rgba(248,81,73,0.2);    color: var(--color-accent-err); }
+.badge-info    { background: rgba(88,166,255,0.2);    color: var(--color-accent-2); }
+.badge-local   { background: rgba(63,185,80,0.15);   color: var(--color-accent); }
+.badge-cloud   { background: rgba(88,166,255,0.12);  color: var(--color-accent-2); }
+
+/* ── Section header / divider ─────────────────────────────────────────────── */
+.section-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-4);
+}
+.section-divider {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-3);
+  border-top: 1px solid var(--glass-border);
+  padding-top: 14px;
+  margin-top: 4px;
+}
+
+/* ── Selection grid (providers, search, etc.) ─────────────────────────────── */
+.select-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+}
+.select-grid-btn {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 6px 8px;
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all var(--t-fast);
+  text-align: center;
+  height: auto;
+}
+.select-grid-btn:hover {
+  background: var(--glass-light);
+  border-color: var(--glass-light-border);
+  transform: translateY(-1px);
+}
+.select-grid-btn.active {
+  background: var(--glass-tinted);
+  border-color: var(--glass-tinted-border);
+  box-shadow: 0 0 0 1px rgba(63,185,80,0.25);
+}
+.select-grid-icon { font-size: 20px; line-height: 1; }
+.select-grid-name { font-size: 12px; font-weight: 700; color: var(--color-text); }
+
+/* ── Glass panel (compact card without hover effects) ─────────────────────── */
+.glass-panel {
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+
+/* ── Prose (markdown content rendering) ───────────────────────────────────── */
+.prose-sm p { margin: 0.4em 0; }
+.prose-sm h1,
+.prose-sm h2,
+.prose-sm h3 {
+  font-size: 1em;
+  font-weight: 700;
+  margin: 0.8em 0 0.3em;
+  color: var(--color-accent);
+  border-bottom: 1px solid rgba(63,185,80,0.15);
+  padding-bottom: 2px;
+}
+.prose-sm h1 { font-size: 1.05em; }
+.prose-sm ul, .prose-sm ol { margin: 0.4em 0; padding-left: 1.5em; }
+.prose-sm li { margin: 0.2em 0; }
+.prose-sm li::marker { color: var(--color-text-4); }
+.prose-sm strong { font-weight: 700; color: var(--color-text); }
+.prose-sm em { color: var(--color-text-3); }
+.prose-sm code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  padding: 1px 5px;
+  background: rgba(110,118,129,0.15);
+  border-radius: 3px;
+}
+.prose-sm pre {
+  background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(48,54,61,0.5);
+  border-radius: 5px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  font-size: 11px;
+  margin: 0.4em 0;
+}
+.prose-sm pre code { background: none; padding: 0; }
+.prose-sm .table-wrap {
+  overflow-x: auto;
+  margin: 0.4em 0;
+  border: 1px solid rgba(48,54,61,0.5);
+  border-radius: 4px;
+}
+.prose-sm table {
+  border-collapse: collapse;
+  font-size: 10px;
+  width: 100%;
+  margin: 0;
+}
+.prose-sm th, .prose-sm td {
+  border: 1px solid rgba(48,54,61,0.5);
+  padding: 3px 7px;
+  text-align: left;
+}
+.prose-sm th {
+  background: rgba(63,185,80,0.06);
+  font-weight: 700;
+  color: var(--color-accent);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+.prose-sm blockquote {
+  border-left: 2px solid var(--color-accent);
+  margin: 0.4em 0;
+  padding: 0.2em 0 0.2em 10px;
+  color: var(--color-text-3);
+}
+.prose-sm hr { border: none; border-top: 1px solid var(--glass-border); margin: 0.6em 0; }
+.prose-sm .card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 6px;
+  margin: 0.4em 0;
+}
+.prose-sm .data-card {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(48,54,61,0.5);
+  border-radius: 5px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.prose-sm .card-title {
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--color-accent);
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(63,185,80,0.12);
+}
+.prose-sm .card-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 8px;
+}
+.prose-sm .card-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.prose-sm .card-label {
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-4);
+  font-family: var(--font-mono);
+}
+.prose-sm .card-value {
+  font-size: 11px;
+  color: var(--color-text);
+  line-height: 1.3;
+}
+.prose-sm .agent-label {
+  font-family: var(--font-mono);
+  font-size: 0.8em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-accent);
+  background: rgba(63,185,80,0.08);
+  padding: 1px 5px;
+  border-radius: 2px;
+  border: 1px solid rgba(63,185,80,0.12);
+}
+.prose-sm .ticker {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--color-accent-2);
+  background: rgba(88,166,255,0.08);
+  padding: 0 3px;
+  border-radius: 2px;
+  font-size: 0.88em;
+  letter-spacing: 0.02em;
+}
+.prose-sm .callout {
+  margin: 0.5em 0;
+  padding: 6px 10px;
+  border-radius: 5px;
+  border: 1px solid rgba(48,54,61,0.5);
+}
+.prose-sm .callout > h2,
+.prose-sm .callout > h3 {
+  margin-top: 0;
+  font-size: 0.9em;
+}
+.prose-sm .callout-source {
+  background: rgba(88,166,255,0.04);
+  border-color: rgba(88,166,255,0.15);
+  border-left: 2px solid rgba(88,166,255,0.4);
+}
+.prose-sm .callout-source > h2,
+.prose-sm .callout-source > h3 { color: var(--color-accent-2); }
+.prose-sm .callout-data {
+  background: rgba(210,153,34,0.04);
+  border-color: rgba(210,153,34,0.15);
+  border-left: 2px solid rgba(210,153,34,0.35);
+}
+.prose-sm .section-break {
+  height: 0;
+  margin: 0.8em 0 0.3em;
+  border-top: 1px solid rgba(48,54,61,0.3);
+}
+.prose-sm .verdict {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.78em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 7px;
+  border-radius: 3px;
+  line-height: 1.5;
+}
+.prose-sm .verdict-pos  { color: var(--color-accent);      background: rgba(63,185,80,0.10);  border: 1px solid rgba(63,185,80,0.25); }
+.prose-sm .verdict-neut { color: var(--color-accent-warn); background: rgba(210,153,34,0.10); border: 1px solid rgba(210,153,34,0.25); }
+.prose-sm .verdict-neg  { color: var(--color-accent-err);  background: rgba(248,81,73,0.10);  border: 1px solid rgba(248,81,73,0.25); }
+.prose-sm .num-pos { color: var(--color-accent);     font-weight: 600; }
+.prose-sm .num-neg { color: var(--color-accent-err); font-weight: 600; }

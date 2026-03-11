@@ -37,7 +37,7 @@
   const agentMap = $derived(new Map(agents.map((a) => [a.id, a])))
 
   function agentColor(id: string): string {
-    return agentMap.get(id)?.color ?? 'var(--text-muted)'
+    return agentMap.get(id)?.color ?? 'var(--color-text-3)'
   }
 
   function agentName(id: string): string {
@@ -93,9 +93,9 @@
           <span class="arrow">→</span>
           <span class="agent-name" style="color: {agentColor(msg.toAgent)}">{agentName(msg.toAgent)}</span>
         </span>
-        <span class="badge {msg.type}">{msg.type}</span>
+        <span class="badge {msg.type === 'task' ? 'badge-warn' : msg.type === 'error' ? 'badge-error' : msg.type === 'human' ? 'badge-info' : msg.type === 'result' ? 'badge-accent' : 'badge-default'}">{msg.type}</span>
         {#if msg.type === 'error' && onRetry && isRunning}
-          <button class="retry-inline" onclick={() => onRetry(msg.fromAgent)} aria-label="Retry {agentName(msg.fromAgent)}">Retry</button>
+          <button class="btn-retry" onclick={() => onRetry(msg.fromAgent)} aria-label="Retry {agentName(msg.fromAgent)}">Retry</button>
         {/if}
         <div class="content prose-sm">{@html sanitizeHtml(enhanceProse(marked.parse(cleanContent(msg.content)) as string))}</div>
       </div>
@@ -160,9 +160,9 @@
     flex-direction: column;
     height: 100%;
     overflow: hidden;
-    border: 1px solid var(--border);
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius);
-    background: var(--surface);
+    background: var(--color-surface);
   }
 
   .monitor-header {
@@ -170,13 +170,13 @@
     align-items: center;
     justify-content: space-between;
     padding: 8px 14px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--glass-border);
     font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
   }
-  .label { color: var(--accent); }
+  .label { color: var(--color-accent); }
   .count { font-family: var(--font-mono); }
 
   .feed {
@@ -194,7 +194,7 @@
     align-items: center;
     justify-content: center;
     height: 100%;
-    color: var(--text-dim);
+    color: var(--color-text-4);
     gap: 8px;
     font-size: 13px;
   }
@@ -213,14 +213,14 @@
   .event:last-child { border-bottom: none; }
   .event:hover { background: var(--surface-2); }
 
-  .event.task    { border-left: 3px solid var(--accent-gold); padding-left: 11px; }
-  .event.error   { border-left: 3px solid var(--accent-red);  padding-left: 11px; background: rgba(248,81,73,0.04); }
+  .event.task    { border-left: 3px solid var(--color-accent-warn); padding-left: 11px; }
+  .event.error   { border-left: 3px solid var(--color-accent-err);  padding-left: 11px; background: rgba(248,81,73,0.04); }
   .event.human   { border-left: 3px solid #58a6ff;           padding-left: 11px; background: rgba(88,166,255,0.04); }
-  .event.system  { border-left: 3px solid var(--text-dim);   padding-left: 11px; }
-  .event.result  { border-left: 3px solid var(--accent);     padding-left: 11px; }
+  .event.system  { border-left: 3px solid var(--color-text-4);   padding-left: 11px; }
+  .event.result  { border-left: 3px solid var(--color-accent);     padding-left: 11px; }
 
   .time {
-    color: var(--text-dim);
+    color: var(--color-text-4);
     font-size: 11px;
     flex-shrink: 0;
   }
@@ -237,250 +237,16 @@
     font-weight: 700;
     letter-spacing: 0.02em;
   }
-  .arrow { color: var(--text-dim); }
-
-  .badge {
-    font-size: 10px;
-    padding: 1px 5px;
-    border-radius: 3px;
-    text-transform: uppercase;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    flex-shrink: 0;
-    background: var(--surface-3);
-    color: var(--text-muted);
-  }
-  .badge.task   { background: rgba(210,153,34,0.2); color: var(--accent-gold); }
-  .badge.error  { background: rgba(248,81,73,0.2);  color: var(--accent-red); }
-  .badge.human  { background: rgba(88,166,255,0.2); color: #79c0ff; }
-  .badge.result { background: rgba(63,185,80,0.2);  color: var(--accent); }
-
-  .retry-inline {
-    font-size: 9px;
-    font-weight: 700;
-    padding: 1px 7px;
-    border-radius: 4px;
-    border: 1px solid rgba(255,90,90,0.3);
-    background: rgba(255,90,90,0.08);
-    color: var(--accent-red, #f85149);
-    cursor: pointer;
-    height: auto;
-    line-height: 1.4;
-    transition: all 0.15s ease;
-    flex-shrink: 0;
-  }
-  .retry-inline:hover {
-    background: rgba(255,90,90,0.18);
-    border-color: rgba(255,90,90,0.5);
-  }
+  .arrow { color: var(--color-text-4); }
 
   .content {
     width: 100%;
-    color: var(--text);
+    color: var(--color-text);
     font-size: 12.5px;
     line-height: 1.5;
     word-break: break-word;
     padding-top: 3px;
   }
-
-  /* Markdown styling for monitor messages */
-  .prose-sm :global(p) { margin: 0.4em 0; }
-  .prose-sm :global(h1),
-  .prose-sm :global(h2),
-  .prose-sm :global(h3) {
-    font-size: 1em;
-    font-weight: 700;
-    margin: 0.8em 0 0.3em;
-    color: var(--accent);
-    border-bottom: 1px solid rgba(63,185,80,0.15);
-    padding-bottom: 2px;
-  }
-  .prose-sm :global(h1) { font-size: 1.05em; }
-  .prose-sm :global(ul), .prose-sm :global(ol) { margin: 0.4em 0; padding-left: 1.5em; }
-  .prose-sm :global(li) { margin: 0.2em 0; }
-  .prose-sm :global(li)::marker { color: var(--text-dim); }
-  .prose-sm :global(strong) { font-weight: 700; color: var(--text); }
-  .prose-sm :global(em) { color: var(--text-muted); }
-  .prose-sm :global(code) {
-    font-family: var(--font-mono);
-    font-size: 0.88em;
-    padding: 1px 5px;
-    background: rgba(110,118,129,0.15);
-    border-radius: 3px;
-  }
-  .prose-sm :global(pre) {
-    background: rgba(0,0,0,0.3);
-    border: 1px solid rgba(48,54,61,0.5);
-    border-radius: 5px;
-    padding: 8px 10px;
-    overflow-x: auto;
-    font-size: 11px;
-    margin: 0.4em 0;
-  }
-  .prose-sm :global(pre code) { background: none; padding: 0; }
-  /* Small tables */
-  .prose-sm :global(.table-wrap) {
-    overflow-x: auto;
-    margin: 0.4em 0;
-    border: 1px solid rgba(48,54,61,0.5);
-    border-radius: 4px;
-  }
-  .prose-sm :global(table) {
-    border-collapse: collapse;
-    font-size: 10px;
-    width: 100%;
-    margin: 0;
-  }
-  .prose-sm :global(th), .prose-sm :global(td) {
-    border: 1px solid rgba(48,54,61,0.5);
-    padding: 3px 7px;
-    text-align: left;
-  }
-  .prose-sm :global(th) {
-    background: rgba(63,185,80,0.06);
-    font-weight: 700;
-    color: var(--accent);
-    font-size: 9px;
-    text-transform: uppercase;
-  }
-
-  /* Card grid for wide tables */
-  .prose-sm :global(.card-grid) {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-    gap: 6px;
-    margin: 0.4em 0;
-  }
-  .prose-sm :global(.data-card) {
-    background: rgba(255,255,255,0.02);
-    border: 1px solid rgba(48,54,61,0.5);
-    border-radius: 5px;
-    padding: 8px 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-  .prose-sm :global(.card-title) {
-    font-weight: 700;
-    font-size: 12px;
-    color: var(--accent);
-    padding-bottom: 4px;
-    border-bottom: 1px solid rgba(63,185,80,0.12);
-  }
-  .prose-sm :global(.card-fields) {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 3px 8px;
-  }
-  .prose-sm :global(.card-field) {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-  }
-  .prose-sm :global(.card-label) {
-    font-size: 8px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--text-dim);
-    font-family: var(--font-mono);
-  }
-  .prose-sm :global(.card-value) {
-    font-size: 11px;
-    color: var(--text);
-    line-height: 1.3;
-  }
-  .prose-sm :global(hr) { border: none; border-top: 1px solid var(--border); margin: 0.6em 0; }
-  .prose-sm :global(.agent-label) {
-    font-family: var(--font-mono);
-    font-size: 0.8em;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    color: var(--accent);
-    background: rgba(63,185,80,0.08);
-    padding: 1px 5px;
-    border-radius: 2px;
-    border: 1px solid rgba(63,185,80,0.12);
-  }
-  .prose-sm :global(.ticker) {
-    font-family: var(--font-mono);
-    font-weight: 700;
-    color: #79c0ff;
-    background: rgba(88,166,255,0.08);
-    padding: 0 3px;
-    border-radius: 2px;
-    font-size: 0.88em;
-    letter-spacing: 0.02em;
-  }
-  .prose-sm :global(blockquote) {
-    border-left: 2px solid var(--accent);
-    margin: 0.4em 0;
-    padding: 0.2em 0 0.2em 10px;
-    color: var(--text-muted);
-  }
-
-  /* Callouts in activity monitor */
-  .prose-sm :global(.callout) {
-    margin: 0.5em 0;
-    padding: 6px 10px;
-    border-radius: 5px;
-    border: 1px solid rgba(48,54,61,0.5);
-  }
-  .prose-sm :global(.callout > h2),
-  .prose-sm :global(.callout > h3) {
-    margin-top: 0;
-    font-size: 0.9em;
-  }
-  .prose-sm :global(.callout-source) {
-    background: rgba(88,166,255,0.04);
-    border-color: rgba(88,166,255,0.15);
-    border-left: 2px solid rgba(88,166,255,0.4);
-  }
-  .prose-sm :global(.callout-source > h2),
-  .prose-sm :global(.callout-source > h3) { color: #79c0ff; }
-  .prose-sm :global(.callout-data) {
-    background: rgba(210,153,34,0.04);
-    border-color: rgba(210,153,34,0.15);
-    border-left: 2px solid rgba(210,153,34,0.35);
-  }
-  .prose-sm :global(.section-break) {
-    height: 0;
-    margin: 0.8em 0 0.3em;
-    border-top: 1px solid rgba(48,54,61,0.3);
-  }
-
-  /* Verdict badges — colored pills for BUY/SELL/HOLD etc. */
-  .prose-sm :global(.verdict) {
-    display: inline-block;
-    font-family: var(--font-mono);
-    font-size: 0.78em;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    padding: 1px 7px;
-    border-radius: 3px;
-    line-height: 1.5;
-  }
-  .prose-sm :global(.verdict-pos) {
-    color: #3fb950;
-    background: rgba(63,185,80,0.10);
-    border: 1px solid rgba(63,185,80,0.25);
-  }
-  .prose-sm :global(.verdict-neut) {
-    color: #d29922;
-    background: rgba(210,153,34,0.10);
-    border: 1px solid rgba(210,153,34,0.25);
-  }
-  .prose-sm :global(.verdict-neg) {
-    color: #f85149;
-    background: rgba(248,81,73,0.10);
-    border: 1px solid rgba(248,81,73,0.25);
-  }
-
-  /* Signed numbers — green positive, red negative */
-  .prose-sm :global(.num-pos) { color: #3fb950; font-weight: 600; }
-  .prose-sm :global(.num-neg) { color: #f85149; font-weight: 600; }
 
   /* ── Final result block ──────────────────────────────────────────── */
   .final-result {
@@ -504,7 +270,7 @@
   .result-dot {
     width: 7px; height: 7px;
     border-radius: 50%;
-    background: var(--accent);
+    background: var(--color-accent);
     box-shadow: 0 0 8px rgba(63,185,80,0.6);
     flex-shrink: 0;
   }
@@ -513,7 +279,7 @@
     font-weight: 800;
     text-transform: uppercase;
     letter-spacing: 0.07em;
-    color: var(--accent);
+    color: var(--color-accent);
     flex: 1;
   }
   .result-body {
@@ -533,7 +299,7 @@
     background: rgba(255,255,255,0.03);
     border: 1px solid rgba(48,54,61,0.5);
     border-radius: 5px;
-    color: var(--text);
+    color: var(--color-text);
     font-size: 12px;
     padding: 6px 10px;
     outline: none;
@@ -551,7 +317,7 @@
 
   .log-section {
     padding: 8px 14px;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--glass-border);
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -561,12 +327,12 @@
   }
   .log-line {
     font-size: 11px;
-    color: var(--text-dim);
+    color: var(--color-text-4);
   }
 
   /* ── Typing indicator ──────────────────────────────────────────────── */
   .event.streaming {
-    border-left: 3px solid var(--accent);
+    border-left: 3px solid var(--color-accent);
     padding-left: 11px;
     background: rgba(63,185,80,0.03);
     align-items: center;
@@ -590,7 +356,7 @@
     width: 4px;
     height: 4px;
     border-radius: 50%;
-    background: var(--accent);
+    background: var(--color-accent);
     animation: typing-bounce 1.2s ease-in-out infinite;
   }
   .typing-dot:nth-child(2) { animation-delay: 0.2s; }

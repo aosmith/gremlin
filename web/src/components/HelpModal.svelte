@@ -290,15 +290,5 @@
     color: var(--color-text-3);
   }
 
-  /* ── Section divider (inherited from global but scoped for spacing) ──── */
-  .section-divider {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--color-text-3);
-    border-top: 1px solid var(--glass-border);
-    padding-top: 14px;
-    margin-top: 4px;
-  }
+
 </style>

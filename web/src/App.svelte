@@ -154,10 +154,10 @@
       </div>
       <div class="modal-body">
         <p>An agent wants to search the web but no search provider is set up. Pick one or more to continue:</p>
-        <div class="search-provider-grid">
+        <div class="select-grid">
           {#each SEARCH_PROVIDERS as p (p.id)}
             <button
-              class="search-provider-btn"
+              class="select-grid-btn"
               class:active={store.settings.searchProviders?.includes(p.id)}
               onclick={() => {
                 const cur = store.settings.searchProviders ?? []
@@ -165,8 +165,8 @@
                 store.updateSettings({ searchProviders: next, searchEndpoint: p.endpoint || store.settings.searchEndpoint })
               }}
             >
-              <span class="sp-icon">{p.icon}</span>
-              <span class="sp-name">{p.name}</span>
+              <span class="select-grid-icon">{p.icon}</span>
+              <span class="select-grid-name">{p.name}</span>
               <span class="sp-desc">{p.description}</span>
             </button>
           {/each}
@@ -497,7 +497,7 @@
     <!-- Left sidebar: agents + (in engineering mode) file tree -->
     <aside class="sidebar">
       <div class="sidebar-head">
-        <span class="sidebar-label">Agents</span>
+        <span class="section-label">Agents</span>
         <button
           class="ghost icon"
           onclick={() => (store.showAgentEdit = '__new__')}
@@ -545,7 +545,7 @@
       {#if isEngineering && (store.projectDirName || store.writtenFiles.length > 0)}
         <div class="files-section">
           <div class="files-head">
-            <span class="sidebar-label">Files</span>
+            <span class="section-label">Files</span>
             {#if store.projectDirName}
               <button
                 class="ghost icon btn-refresh"
@@ -956,14 +956,6 @@
     border-bottom: 1px solid var(--glass-border);
     flex-shrink: 0;
   }
-  .sidebar-label {
-    font-size: 10px;
-    font-weight: 800;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--color-text-4);
-  }
-
   .agent-list {
     flex: 1;
     overflow-y: auto;
@@ -1015,36 +1007,6 @@
   /* ── Search setup modal ─────────────────────────────────────────────── */
   .search-setup-modal { max-width: 500px; }
   .search-setup-modal p { margin: 0 0 12px; font-size: 13px; color: var(--color-text-2); line-height: 1.5; }
-  .search-provider-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 7px;
-  }
-  .search-provider-btn {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 3px;
-    padding: 10px 6px 8px;
-    background: var(--glass);
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius);
-    cursor: pointer;
-    transition: all var(--t-fast);
-    text-align: center;
-  }
-  .search-provider-btn:hover {
-    background: var(--glass-light);
-    border-color: var(--glass-light-border);
-    transform: translateY(-1px);
-  }
-  .search-provider-btn.active {
-    background: var(--glass-tinted);
-    border-color: var(--glass-tinted-border);
-    box-shadow: 0 0 0 1px rgba(63,185,80,0.25);
-  }
-  .sp-icon { font-size: 20px; line-height: 1; }
-  .sp-name { font-size: 12px; font-weight: 700; color: var(--color-text); }
   .sp-desc { font-size: 10px; color: var(--color-text-3); }
 
   .suggest-modal {

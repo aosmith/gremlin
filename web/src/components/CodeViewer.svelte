@@ -49,7 +49,7 @@
       <span class="path-icon">📄</span>
       <span class="path-text" title={path ?? ''}>{path ?? '—'}</span>
       {#if lang}
-        <span class="lang-badge">{lang}</span>
+        <span class="badge badge-info">{lang}</span>
       {/if}
     </div>
     <div class="header-actions">
@@ -124,19 +124,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .lang-badge {
-    font-size: 9px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    padding: 1px 5px;
-    border-radius: 3px;
-    background: var(--glass-blue);
-    border: 1px solid var(--glass-blue-border);
-    color: var(--color-accent-2);
-    flex-shrink: 0;
-  }
-
   .header-actions {
     display: flex;
     align-items: center;

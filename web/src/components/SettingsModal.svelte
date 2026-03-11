@@ -179,17 +179,17 @@
       <div class="field">
         <!-- svelte-ignore a11y_label_has_associated_control -->
         <label>LLM Providers <small class="muted">(select multiple for round-robin)</small></label>
-        <div class="provider-grid">
+        <div class="select-grid">
           {#each PROVIDERS as p (p.id)}
             <button
-              class="provider-btn"
+              class="select-grid-btn"
               class:active={activeLLM.some((lp) => lp.id === p.id)}
               onclick={() => toggleLLMProvider(p)}
               title={p.description}
             >
-              <span class="p-icon">{p.icon}</span>
-              <span class="p-name">{p.name}</span>
-              <span class="p-kind {p.kind}">{p.kind}</span>
+              <span class="select-grid-icon">{p.icon}</span>
+              <span class="select-grid-name">{p.name}</span>
+              <span class="badge badge-{p.kind}">{p.kind}</span>
               {#if activeLLM.some((lp) => lp.id === p.id)}
                 <span class="p-order">{activeLLM.findIndex((lp) => lp.id === p.id) + 1}</span>
               {/if}
@@ -293,16 +293,16 @@
       <div class="field">
         <!-- svelte-ignore a11y_label_has_associated_control -->
         <label>Search Providers <small class="muted">(select multiple — tried in order, falls back on failure)</small></label>
-        <div class="provider-grid search-grid">
+        <div class="select-grid search-grid">
           {#each SEARCH_PROVIDERS as p (p.id)}
             <button
-              class="provider-btn"
+              class="select-grid-btn"
               class:active={activeSearchIds.includes(p.id)}
               onclick={() => toggleSearchProvider(p)}
               title={p.description}
             >
-              <span class="p-icon">{p.icon}</span>
-              <span class="p-name">{p.name}</span>
+              <span class="select-grid-icon">{p.icon}</span>
+              <span class="select-grid-name">{p.name}</span>
               {#if activeSearchIds.includes(p.id)}
                 <span class="p-order">{activeSearchIds.indexOf(p.id) + 1}</span>
               {/if}
@@ -435,40 +435,6 @@
   .wide { max-width: 680px; }
 
   /* ── Provider grid ──────────────────────────────────────────────────────── */
-  .provider-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 7px;
-  }
-
-  .provider-btn {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 4px;
-    padding: 10px 6px 8px;
-    background: var(--glass);
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius);
-    cursor: pointer;
-    transition: all var(--t-fast);
-    height: auto;
-    text-align: center;
-  }
-  .provider-btn:hover {
-    background: var(--glass-light);
-    border-color: var(--glass-light-border);
-    transform: translateY(-1px);
-  }
-  .provider-btn.active {
-    background: var(--glass-tinted);
-    border-color: var(--glass-tinted-border);
-    box-shadow: 0 0 0 1px rgba(63,185,80,0.25);
-  }
-
-  .p-icon { font-size: 20px; line-height: 1; }
-  .p-name { font-size: 12px; font-weight: 700; color: var(--color-text); }
   .p-order {
     position: absolute;
     top: 4px;
@@ -485,16 +451,6 @@
     justify-content: center;
     border-radius: 50%;
   }
-  .p-kind {
-    font-size: 9px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    padding: 1px 5px;
-    border-radius: 3px;
-  }
-  .p-kind.local { background: rgba(63,185,80,0.15);   color: var(--color-accent); }
-  .p-kind.cloud { background: rgba(88,166,255,0.12); color: var(--color-accent-2); }
 
   .provider-desc {
     font-size: 12px;
@@ -686,17 +642,7 @@
     color: var(--color-text-3);
   }
 
-  /* ── Search / section divider ──────────────────────────────────────────── */
-  .section-divider {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--color-text-3);
-    border-top: 1px solid var(--glass-border);
-    padding-top: 14px;
-    margin-top: 4px;
-  }
+  /* ── Search grid column override ─────────────────────────────────────── */
   .search-grid {
     grid-template-columns: repeat(3, 1fr);
   }
