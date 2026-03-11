@@ -345,9 +345,21 @@ export class AgentRunner {
         const synthesizer = agents.find((a) => a.role === 'synthesizer')
 
         if (workers.length > 0 && synthesizer) {
-          let allWorkersDone = workers.every(
-            (w) => coord.getAgentStatus(w.id) === 'done' || coord.getAgentStatus(w.id) === 'error',
-          )
+          // A worker that never received any messages (e.g. TDD Engineer, Editor)
+          // was never dispatched and should not block synthesis. But a worker that
+          // HAS received messages (even if still idle/waiting) must finish first —
+          // it was dispatched and its output matters (e.g. Risk Assessor dispatched
+          // in a later round).
+          const atLeastOneCompleted = workers.some((w) => {
+            const s = coord.getAgentStatus(w.id)
+            return s === 'done' || s === 'error'
+          })
+          let allWorkersDone = atLeastOneCompleted && workers.every((w) => {
+            const neverDispatched = coord.getMessageCountFor(w.id) === 0
+            if (neverDispatched) return true // never got work — don't block
+            const status = coord.getAgentStatus(w.id)
+            return status === 'done' || status === 'error'
+          })
           const synthStatus = coord.getAgentStatus(synthesizer.id)
 
           // Peer-message wake-up: if all workers report "done" but some have
