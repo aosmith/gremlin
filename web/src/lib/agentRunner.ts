@@ -55,6 +55,9 @@ const RETRY_BASE_MS = 2_000
 /** Max agents hitting the LLM simultaneously (prevents overwhelming providers). */
 const MAX_CONCURRENT = 3
 
+/** Per-agent turn timeout (ms). Prevents a single stuck LLM call from hanging the session. */
+const AGENT_TURN_TIMEOUT_MS = 5 * 60 * 1000  // 5 minutes
+
 export class AgentRunner {
   private configs = new Map<string, AgentConfig>()
   private histories = new Map<string, LLMMessage[]>()
@@ -133,6 +136,21 @@ export class AgentRunner {
     let s = this.settings
     if (agent.model?.trim()) s = { ...s, model: agent.model.trim() }
     return s
+  }
+
+  /**
+   * Group agents by their effective model name so same-model agents run as a batch.
+   * This minimizes Ollama model swaps — load a model once, run all agents that use it.
+   */
+  private groupByModel(agents: AgentConfig[]): AgentConfig[][] {
+    const groups = new Map<string, AgentConfig[]>()
+    for (const a of agents) {
+      const model = a.model?.trim() || this.settings.model || ''
+      let bucket = groups.get(model)
+      if (!bucket) { bucket = []; groups.set(model, bucket) }
+      bucket.push(a)
+    }
+    return [...groups.values()]
   }
 
   /**
@@ -311,8 +329,14 @@ export class AgentRunner {
           this.cb.onStatusUpdate(a.id, 'waiting')
         }
 
-        // Run agents with concurrency limit to avoid overwhelming LLM providers
-        await this.runWithConcurrency(pending, MAX_CONCURRENT, (a) => this.runAgentTurn(a, this.round))
+        // Group agents by resolved model so same-model agents run together.
+        // This prevents Ollama from thrashing models in/out of VRAM when
+        // different agents use different models.
+        const modelBatches = this.groupByModel(pending)
+        for (const batch of modelBatches) {
+          if (this.aborted) break
+          await this.runWithConcurrency(batch, MAX_CONCURRENT, (a) => this.runAgentTurnWithTimeout(a, this.round))
+        }
 
         if (this.aborted) break
 
@@ -577,6 +601,145 @@ export class AgentRunner {
     }
   }
 
+  // ── Local router — lightweight in-browser orchestration via WebGPU ──────────
+
+  /**
+   * Try to run the orchestrator turn via WebLLM in the browser.
+   * Returns true if handled, false to fall back to normal LLM path.
+   */
+  private async tryLocalRouter(agent: AgentConfig, userContent: string, round: number): Promise<boolean> {
+    const { isWebGPUAvailable, callWebLLM } = await import('./webllm')
+    if (!isWebGPUAvailable()) return false
+
+    const history = this.histories.get(agent.id) ?? []
+    const isFirstTurn = history.length === 0
+    const prompt = this.buildRouterPrompt(agent, isFirstTurn)
+
+    this.cb.onLog(`⚡ ${agent.name}: using in-browser model (${agent.localModel})`)
+
+    try {
+      const t0 = performance.now()
+      const response = await callWebLLM(
+        [{ role: 'system', content: prompt }, ...history.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : '' })), { role: 'user', content: userContent }],
+        agent.localModel!,
+        1024,
+        this.cb.onProgress,
+      )
+      const elapsed = performance.now() - t0
+      this.agentLatency.set(agent.id, (this.agentLatency.get(agent.id) ?? 0) + elapsed)
+      this.agentTurns.set(agent.id, (this.agentTurns.get(agent.id) ?? 0) + 1)
+
+      // Persist history
+      const userMsg: LLMMessage = { role: 'user', content: userContent }
+      const updated: LLMMessage[] = [...history, userMsg, { role: 'assistant', content: response }]
+      this.histories.set(agent.id, updated.length > MAX_HISTORY_PER_AGENT ? updated.slice(-MAX_HISTORY_PER_AGENT) : updated)
+
+      // Parse the response — same parser as normal agents
+      const parsed = this.parseResponse(response)
+
+      // Safety: orchestrator should never mark done on first turn
+      if (isFirstTurn && parsed.messages.length === 0) {
+        parsed.done = false
+        const workers = this.agents.filter((a) => a.role === 'worker' || a.role === 'custom')
+        for (const w of workers) {
+          parsed.messages.push({ to: w.id, content: userContent })
+        }
+        this.cb.onLog(`↪ ${agent.name} local router didn't delegate — auto-distributing to workers`)
+      }
+      if (isFirstTurn) parsed.done = false
+
+      // Route messages
+      for (const outMsg of parsed.messages) {
+        const target = this.resolveAgent(outMsg.to)
+        if (target) {
+          this.emit({ fromAgent: agent.id, toAgent: target.id, content: outMsg.content, type: 'message', timestamp: Date.now(), round })
+        } else {
+          this.cb.onLog(`⚠ ${agent.name} tried to message unknown agent "${outMsg.to}" — skipped`)
+        }
+      }
+
+      if (parsed.done) {
+        coord.updateAgentStatus(agent.id, 'done')
+        this.cb.onStatusUpdate(agent.id, 'done')
+      } else if (parsed.messages.length > 0) {
+        coord.updateAgentStatus(agent.id, 'waiting')
+        this.cb.onStatusUpdate(agent.id, 'waiting')
+      }
+
+      return true
+    } catch (err) {
+      // WebLLM failed — fall back to normal LLM
+      this.cb.onLog(`⚠ ${agent.name}: local model failed (${err instanceof Error ? err.message : err}), falling back to provider`)
+      return false
+    }
+  }
+
+  /**
+   * Build a tight prompt for the in-browser router model.
+   * Optimized for small models (3B): explicit format, example, simple rules.
+   */
+  private buildRouterPrompt(agent: AgentConfig, isFirstTurn: boolean): string {
+    const workers = this.agents.filter((a) => a.id !== agent.id && a.role !== 'synthesizer')
+    const workerList = workers
+      .map((a) => {
+        // Extract first sentence of the system prompt as a description
+        const desc = a.systemPrompt.replace(/<[^>]+>/g, '').split(/[.!?\n]/)[0]?.trim() || a.name
+        return `  • ${a.id}: ${a.name} — ${desc}`
+      })
+      .join('\n')
+
+    if (isFirstTurn) {
+      return `You are a task dispatcher. Read the request and assign work to your team.
+Do NOT do research, analysis, or web searches yourself. ONLY route tasks.
+
+YOUR TEAM:
+${workerList}
+
+Respond with ONLY this JSON object — no other text, no markdown fences:
+{"analysis":"","messages":[{"to":"agent_id","content":"assignment"}],"done":false}
+
+RULES:
+1. Send a message to EVERY worker on your team.
+2. Each assignment must be a specific, actionable instruction.
+3. Tell agents to use web_search to find current data.
+4. Tailor each assignment to that agent's specialty.
+5. Do NOT include your own analysis or opinions.
+6. ${agent.systemPrompt.includes('Risk Assessor') ? 'Tell Risk Assessor to wait for other agents to report before stress-testing.' : 'Be specific about what each agent should research.'}`
+    }
+
+    // Follow-up turns: read worker reports, decide next action
+    return `You are a task dispatcher reading worker reports.
+
+YOUR TEAM:
+${workerList}
+
+Decide ONE of these actions. Respond with ONLY the JSON — no other text:
+
+A) All workers reported and results look sufficient:
+{"analysis":"","messages":[],"done":true}
+
+B) A specific agent needs follow-up (missing data, clarification needed):
+{"analysis":"","messages":[{"to":"agent_id","content":"follow-up request"}],"done":false}
+
+Usually workers complete in one round. Choose (A) unless critical data is missing.`
+  }
+
+  /** Wraps runAgentTurn with a timeout to prevent hung sessions. */
+  private async runAgentTurnWithTimeout(agent: AgentConfig, round: number): Promise<void> {
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Agent turn timed out after ${AGENT_TURN_TIMEOUT_MS / 1000}s`)), AGENT_TURN_TIMEOUT_MS),
+    )
+    try {
+      await Promise.race([this.runAgentTurn(agent, round), timeout])
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.cb.onLog(`⚠ ${agent.name}: ${msg}`)
+      coord.updateAgentStatus(agent.id, 'error')
+      this.cb.onStatusUpdate(agent.id, 'error')
+      this.emit({ fromAgent: agent.id, toAgent: 'system', content: `Error: ${msg}`, type: 'system', timestamp: Date.now(), round })
+    }
+  }
+
   private async runAgentTurn(agent: AgentConfig, round: number): Promise<void> {
     const allMsgs = coord.getMessagesFor(agent.id)
     const processed = this.processedCounts.get(agent.id) ?? 0
@@ -596,6 +759,11 @@ export class AgentRunner {
         return `[From ${fromName}]:\n${m.content}`
       })
       .join('\n\n---\n\n')
+
+    // ── Local router fast-path: run orchestrators in-browser via WebGPU ──
+    if (agent.localModel && await this.tryLocalRouter(agent, userContent, round)) {
+      return
+    }
 
     const history = this.histories.get(agent.id) ?? []
     const systemPrompt = this.buildSystemPrompt(agent)

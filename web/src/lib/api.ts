@@ -232,6 +232,7 @@ const SKIP_PROXY = new Set([
   'openrouter.ai',
   'generativelanguage.googleapis.com',
   'api.together.xyz',
+  'api.cloudflare.com',
 ])
 
 function needsProxy(url: string): boolean {

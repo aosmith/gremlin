@@ -8,6 +8,7 @@ import { projectFS } from './filesystem'
 import { performWebSearch } from './search'
 import { proxiedFetch } from './api'
 import { extractContent, renderPage } from './headless'
+import { cfFetchPage } from './cloudflare'
 import type { Settings } from './types'
 
 // ── OpenAI-format tool definitions ────────────────────────────────────────────
@@ -374,7 +375,12 @@ export async function executeTool(
       }
       case 'web_fetch': {
         const { url } = args as { url: string }
-        result = await fetchWebPage(url, settings, signal)
+        // Use Cloudflare Browser Rendering when configured
+        if (settings?.cloudflareAccountId && settings?.cloudflareApiToken) {
+          result = await cfFetchPage(url, settings, signal)
+        } else {
+          result = await fetchWebPage(url, settings, signal)
+        }
         break
       }
       default:

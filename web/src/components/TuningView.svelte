@@ -1,28 +1,36 @@
 <script lang="ts">
   import { store } from '../lib/store.svelte'
-  import { detectHardware, detectOllamaModels, isOllamaRunning, computeRecommendation, suggestModelsForHardware } from '../lib/autotune'
-  import type { HardwareProfile, InstalledModel, TuneRecommendation, SuggestedModel } from '../lib/autotune'
+  import { detectHardware, detectOllamaModels, isOllamaRunning, computeRecommendation, computeAIRecommendation, suggestModelsForHardware } from '../lib/autotune'
+  import type { HardwareProfile, InstalledModel, TuneRecommendation, AIRecommendation, SuggestedModel } from '../lib/autotune'
   import { pullOllamaModel } from '../lib/api'
-  import { agentsForMode, BUILTIN_MODES } from '../lib/types'
+  import { agentsForMode, BUILTIN_MODES, LOCAL_ROUTER_MODEL } from '../lib/types'
   import type { AgentConfig } from '../lib/types'
+  import { isWebGPUAvailable } from '../lib/webllm'
 
   // ── State ──────────────────────────────────────────────────────────────────
-  let phase = $state<'detecting' | 'ready' | 'applying'>('detecting')
+  let phase = $state<'detecting' | 'ai-analyzing' | 'ready' | 'applying'>('detecting')
   let hardware = $state<HardwareProfile | null>(null)
   let ollamaUp = $state(false)
   let models = $state<InstalledModel[]>([])
   let recommendation = $state<TuneRecommendation | null>(null)
+  let aiRecommendation = $state<AIRecommendation | null>(null)
   let suggested = $state<SuggestedModel[]>([])
   let pullingModel = $state<string | null>(null)
   let pullProgress = $state('')
   let error = $state('')
+  let aiStatus = $state('')
+  let aiProgress = $state(0)
+  let aiProgressText = $state('')
+  let useAI = $state(true)  // whether to attempt AI recommendation
 
   const usableVRAM = $derived(hardware ? Math.round(hardware.gpuMemoryGB * 0.75 * 10) / 10 : 0)
+  const activeRec = $derived(aiRecommendation ?? recommendation)
 
   // ── Run detection on mount ──────────────────────────────────────────────────
   async function detect() {
     phase = 'detecting'
     error = ''
+    aiRecommendation = null
     try {
       hardware = await detectHardware()
       const endpoint = store.settings.apiEndpoint || 'http://localhost:11434/v1/chat/completions'
@@ -30,12 +38,38 @@
       if (ollamaUp) {
         models = await detectOllamaModels(endpoint)
       }
-      // Compute recommendation using general mode agents as baseline
+      // Compute scored recommendation as baseline/fallback
       const agents = agentsForMode('general')
       if (models.length > 0 && agents.length > 0) {
         recommendation = computeRecommendation(hardware, models, agents)
       }
       suggested = suggestModelsForHardware(hardware, models)
+
+      // Try AI-powered recommendation if WebGPU available and models/providers exist
+      const cloudProviders = store.settings.llmProviders.filter(p => p.model && p.endpoint)
+      const hasModelsOrCloud = models.length > 0 || cloudProviders.length > 0
+      if (useAI && isWebGPUAvailable() && hasModelsOrCloud) {
+        phase = 'ai-analyzing'
+        aiStatus = 'Loading AI model...'
+        aiProgress = 0
+        try {
+          const result = await computeAIRecommendation(
+            hardware,
+            models,
+            cloudProviders,
+            LOCAL_ROUTER_MODEL,
+            (p) => { aiProgress = p.progress; aiProgressText = p.text },
+            (status) => { aiStatus = status },
+          )
+          if (result) {
+            aiRecommendation = result
+          }
+        } catch (e) {
+          console.warn('[tuning] AI recommendation failed:', e)
+          // Fall through to scored recommendation
+        }
+      }
+
       phase = 'ready'
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
@@ -78,10 +112,16 @@
 
   // Models referenced in the recommendation that aren't installed
   const recModels = $derived(() => {
-    if (!recommendation) return [] as { name: string, installed: boolean }[]
-    const unique = [...new Set(Object.values(recommendation.assignments))]
+    const rec = activeRec
+    if (!rec) return [] as { name: string, installed: boolean }[]
+    const unique = [...new Set(Object.values(rec.assignments))]
     const installedNames = new Set(models.map((m) => m.name))
-    return unique.filter(Boolean).map((name) => ({ name, installed: installedNames.has(name) }))
+    // Cloud models are always "installed" (available via API)
+    const cloudModelNames = new Set(store.settings.llmProviders.map(p => p.model))
+    return unique.filter(Boolean).map((name) => ({
+      name,
+      installed: installedNames.has(name) || cloudModelNames.has(name),
+    }))
   })
   const missingRecModels = $derived(recModels().filter((m) => !m.installed))
 
@@ -101,22 +141,33 @@
 
   // ── Apply recommendation ────────────────────────────────────────────────────
   function applyAndContinue() {
-    if (!recommendation) {
+    const rec = activeRec
+    if (!rec) {
       store.switchMode('general')
       return
     }
     // Set the global model
-    if (recommendation.globalModel) {
-      store.updateSettings({ model: recommendation.globalModel })
+    if (rec.globalModel) {
+      store.updateSettings({ model: rec.globalModel })
     }
     // Apply per-agent model assignments to ALL builtin modes
+    const aiRec = aiRecommendation
     for (const mode of BUILTIN_MODES) {
       if (mode.id === 'tuning') continue
       const agents = agentsForMode(mode.id)
       if (agents.length === 0) continue
-      const modeRec = computeRecommendation(hardware!, models, agents)
+
+      // Use AI per-mode assignments if available, otherwise fall back to scored
+      let modeAssignments: Record<string, string>
+      if (aiRec?.modeAssignments?.[mode.id]) {
+        modeAssignments = aiRec.modeAssignments[mode.id]
+      } else {
+        const modeRec = computeRecommendation(hardware!, models, agents)
+        modeAssignments = modeRec.assignments
+      }
+
       for (const agent of agents) {
-        agent.model = modeRec.assignments[agent.id] || recommendation.globalModel || ''
+        agent.model = modeAssignments[agent.id] || rec.globalModel || ''
       }
       // Save via localStorage directly
       try {
@@ -137,6 +188,48 @@
           <span class="spinner-dot"></span>
           Detecting hardware...
         </div>
+      </div>
+    {:else if phase === 'ai-analyzing'}
+      <!-- Show hardware while AI analyzes -->
+      {#if hardware}
+        <div class="tuning-section">
+          <h2 class="section-title">Hardware</h2>
+          <div class="hw-grid">
+            <div class="hw-card">
+              <span class="hw-label">GPU</span>
+              <span class="hw-value">{hardware.gpuName}</span>
+            </div>
+            <div class="hw-card">
+              <span class="hw-label">Memory</span>
+              <span class="hw-value">{hardware.totalMemoryGB} GB</span>
+            </div>
+            <div class="hw-card">
+              <span class="hw-label">Usable VRAM</span>
+              <span class="hw-value accent">{usableVRAM} GB</span>
+            </div>
+            <div class="hw-card">
+              <span class="hw-label">CPU Cores</span>
+              <span class="hw-value">{hardware.cpuCores}</span>
+            </div>
+          </div>
+        </div>
+      {/if}
+      <div class="tuning-section">
+        <div class="ai-analyzing">
+          <span class="spinner-dot"></span>
+          <div class="ai-status">
+            <span class="ai-status-text">{aiStatus}</span>
+            {#if aiProgress > 0 && aiProgress < 1}
+              <div class="ai-progress-bar">
+                <div class="ai-progress-fill" style="width: {Math.round(aiProgress * 100)}%"></div>
+              </div>
+              <span class="ai-progress-label">{aiProgressText}</span>
+            {/if}
+          </div>
+        </div>
+      </div>
+      <div class="tuning-actions">
+        <button class="ghost" onclick={() => { useAI = false; detect() }}>Skip AI Analysis</button>
       </div>
     {:else}
       <!-- Hardware -->
@@ -190,10 +283,17 @@
       </div>
 
       <!-- Recommendation -->
-      {#if recommendation}
+      {#if activeRec}
         <div class="tuning-section">
           <div class="section-head">
-            <h2 class="section-title">Recommendation</h2>
+            <div>
+              <h2 class="section-title">
+                Recommendation
+                {#if aiRecommendation}
+                  <span class="ai-badge">AI</span>
+                {/if}
+              </h2>
+            </div>
             {#if missingRecModels.length > 0}
               <button
                 class="primary btn-sm"
@@ -204,12 +304,30 @@
           </div>
           <div class="rec-card">
             <div class="rec-strategy">
-              <span class="strategy-badge">{recommendation.strategy.replace('-', ' ')}</span>
-              {#if recommendation.globalModel}
-                <span class="rec-model">{recommendation.globalModel}</span>
+              <span class="strategy-badge">{activeRec.strategy.replace('-', ' ')}</span>
+              {#if activeRec.globalModel}
+                <span class="rec-model">{activeRec.globalModel}</span>
               {/if}
             </div>
-            <p class="rec-reasoning">{recommendation.reasoning}</p>
+            <p class="rec-reasoning">{activeRec.reasoning}</p>
+
+            <!-- Per-mode breakdown for AI recommendation -->
+            {#if aiRecommendation?.modeAssignments}
+              <div class="mode-assignments">
+                {#each Object.entries(aiRecommendation.modeAssignments) as [modeId, agents]}
+                  {@const modeName = BUILTIN_MODES.find(m => m.id === modeId)?.name || modeId}
+                  {@const uniqueModels = [...new Set(Object.values(agents))]}
+                  <div class="mode-assign-row">
+                    <span class="mode-assign-name">{modeName}</span>
+                    <span class="mode-assign-models">
+                      {#each uniqueModels as model, i}
+                        <span class="mode-model-chip">{model}</span>
+                      {/each}
+                    </span>
+                  </div>
+                {/each}
+              </div>
+            {/if}
 
             <!-- Model assignment list -->
             {#if recModels().length > 0}
@@ -218,7 +336,7 @@
                   <div class="rec-model-row" class:installed={m.installed}>
                     <span class="rec-model-name">{m.name}</span>
                     {#if m.installed}
-                      <span class="installed-badge">Installed</span>
+                      <span class="installed-badge">{store.settings.llmProviders.some(p => p.model === m.name) ? 'Cloud' : 'Installed'}</span>
                     {:else if pullingModel === m.name}
                       <span class="pull-status">{pullProgress}</span>
                     {:else}
@@ -233,9 +351,9 @@
               </div>
             {/if}
 
-            {#if recommendation.warnings.length > 0}
+            {#if activeRec.warnings.length > 0}
               <div class="rec-warnings">
-                {#each recommendation.warnings as w}
+                {#each activeRec.warnings as w}
                   <div class="rec-warn-row">
                     <p class="rec-warn">{w.text}</p>
                     {#if w.pullModel}
@@ -312,14 +430,14 @@
 
       <!-- Actions -->
       <div class="tuning-actions">
-        <button class="ghost" onclick={() => detect()}>Re-scan</button>
+        <button class="ghost" onclick={() => { useAI = true; detect() }}>Re-scan</button>
         <button class="ghost" onclick={() => store.switchMode('general')}>Skip Setup</button>
         <button
           class="primary"
           onclick={applyAndContinue}
-          disabled={!recommendation && models.length === 0}
+          disabled={!activeRec && models.length === 0}
         >
-          {recommendation ? 'Apply & Continue' : 'Continue'}
+          {activeRec ? 'Apply & Continue' : 'Continue'}
         </button>
       </div>
       <div class="bottom-spacer"></div>
@@ -499,6 +617,94 @@
     padding: 3px 8px;
     border-radius: 4px;
     background: rgba(63,185,80,0.1);
+    white-space: nowrap;
+  }
+
+  /* AI badge */
+  .ai-badge {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(139, 92, 246, 0.15);
+    color: #a78bfa;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+
+  /* Per-mode assignments */
+  .mode-assignments {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 12px 0;
+    padding: 10px 12px;
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius);
+  }
+  .mode-assign-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 0;
+  }
+  .mode-assign-row + .mode-assign-row { border-top: 1px solid var(--glass-border); padding-top: 6px; }
+  .mode-assign-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text-2);
+    min-width: 100px;
+  }
+  .mode-assign-models { display: flex; flex-wrap: wrap; gap: 4px; }
+  .mode-model-chip {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--glass-tinted);
+    border: 1px solid var(--glass-tinted-border);
+    color: var(--color-accent);
+  }
+
+  /* AI analysis phase */
+  .ai-analyzing {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 20px;
+  }
+  .ai-analyzing .spinner-dot { margin-top: 4px; flex-shrink: 0; }
+  .ai-status {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+  }
+  .ai-status-text { font-size: 13px; color: var(--color-text-2); }
+  .ai-progress-bar {
+    height: 4px;
+    background: var(--glass-border);
+    border-radius: 2px;
+    overflow: hidden;
+    width: 100%;
+  }
+  .ai-progress-fill {
+    height: 100%;
+    background: var(--color-accent);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+  }
+  .ai-progress-label {
+    font-size: 10px;
+    color: var(--color-text-4);
+    font-family: var(--font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 

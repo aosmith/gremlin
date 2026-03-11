@@ -5,6 +5,7 @@
 
 import type { Settings } from './types'
 import { proxiedFetch } from './api'
+import { cfSearch } from './cloudflare'
 
 interface SearchResult {
   title: string
@@ -90,17 +91,23 @@ async function searchTavily(query: string, settings: Settings, signal?: AbortSig
   return formatResults(query, results)
 }
 
-// ── DuckDuckGo (HTML scrape — the JSON API is CORS-blocked in browsers) ──────
+// ── DuckDuckGo (HTML scrape via POST — mimics real form submission) ───────────
 
 async function searchDuckDuckGo(query: string, settings: Settings, signal?: AbortSignal): Promise<string> {
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
-  const resp = await proxiedFetch(url, {
-    method: 'GET',
-    headers: { 'Accept': 'text/html', 'User-Agent': 'Mozilla/5.0 (compatible; GREMLIN/1.0)' },
+  // Use POST with form data (matches how the real HTML form works)
+  const resp = await proxiedFetch('https://html.duckduckgo.com/html/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'text/html' },
+    body: `q=${encodeURIComponent(query)}`,
     signal,
   }, settings)
   if (!resp.ok) throw new Error(`DuckDuckGo search failed: ${resp.status}`)
   const html = await resp.text()
+
+  // Detect captcha / bot challenge
+  if (html.includes('Please complete the') || html.includes('select all squares')) {
+    throw new Error('DuckDuckGo returned a captcha — try a different search provider (Brave, SearXNG)')
+  }
 
   // Parse results from DuckDuckGo's HTML response
   const results: SearchResult[] = []
@@ -156,6 +163,7 @@ const PROVIDER_FNS: Record<string, (q: string, s: Settings, sig?: AbortSignal) =
   tavily:     searchTavily,
   duckduckgo: searchDuckDuckGo,
   searxng:    searchSearXNG,
+  cloudflare: cfSearch,
 }
 
 /**

@@ -354,6 +354,30 @@
         </div>
       {/if}
 
+      {#if activeSearchIds.includes('cloudflare') || draft.cloudflareAccountId}
+        <div class="field">
+          <label for="cf-account">Cloudflare Account ID</label>
+          <input
+            id="cf-account"
+            type="text"
+            bind:value={draft.cloudflareAccountId}
+            placeholder="Account ID from Cloudflare dashboard"
+            autocomplete="off"
+          />
+        </div>
+        <div class="field">
+          <label for="cf-token">Cloudflare API Token</label>
+          <input
+            id="cf-token"
+            type="password"
+            bind:value={draft.cloudflareApiToken}
+            placeholder="Bearer token with Browser Rendering permissions"
+            autocomplete="off"
+          />
+          <small>Also enables Cloudflare Browser Rendering for web_fetch (JS-rendered pages)</small>
+        </div>
+      {/if}
+
       <!-- Browser Tools -->
       <div class="section-divider">Browser Tools</div>
       <label class="toggle-row">

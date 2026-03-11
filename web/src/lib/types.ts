@@ -187,6 +187,9 @@ export interface AgentConfig {
   model?: string
   /** Optional search provider override — falls back to global settings if not set */
   searchProvider?: string  // single provider override for this agent
+  /** If set, run this agent via WebLLM in-browser (e.g. 'Qwen2.5-3B-Instruct-q4f16_1-MLC').
+   *  Used for orchestrators to avoid model-swapping overhead on Ollama. */
+  localModel?: string
 }
 
 export interface AgentState extends AgentConfig {
@@ -252,6 +255,10 @@ export interface Settings {
   llmProviders: LLMProviderConfig[]
   /** Enable Playwright browser tools (requires sidecar server). */
   browserTools: boolean
+  /** Cloudflare Browser Rendering — account ID for the crawl API. */
+  cloudflareAccountId: string
+  /** Cloudflare Browser Rendering — API token. */
+  cloudflareApiToken: string
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -266,6 +273,8 @@ export const DEFAULT_SETTINGS: Settings = {
   searchEndpoint: 'https://searx.be',
   llmProviders: [],
   browserTools: false,
+  cloudflareAccountId: '',
+  cloudflareApiToken: '',
 }
 
 // ── Search providers ──────────────────────────────────────────────────────────
@@ -286,6 +295,7 @@ export const SEARCH_PROVIDERS: SearchProvider[] = [
   { id: 'tavily',     name: 'Tavily',     icon: '🔎', requiresKey: true,  requiresEndpoint: false, endpoint: 'https://api.tavily.com/search',                        description: 'AI-optimized — free tier: 1,000 queries/mo' },
   { id: 'duckduckgo', name: 'DuckDuckGo', icon: '🦆', requiresKey: false, requiresEndpoint: false, endpoint: 'https://api.duckduckgo.com/',                          description: 'Free — no key needed, instant answers' },
   { id: 'searxng',    name: 'SearXNG',    icon: '🔧', requiresKey: false, requiresEndpoint: true,  endpoint: '',                                                      description: 'Self-hosted — provide your instance URL' },
+  { id: 'cloudflare', name: 'Cloudflare', icon: '☁️', requiresKey: false, requiresEndpoint: false, endpoint: '',                                                      description: 'Browser Rendering crawl — needs Account ID + API token in settings' },
 ]
 
 export const AGENT_COLORS = [
@@ -298,6 +308,9 @@ export const AGENT_COLORS = [
   '#58a6ff',
   '#bc8cff',
 ]
+
+/** Small in-browser model for orchestrators — runs via WebGPU, avoids Ollama model swapping. */
+export const LOCAL_ROUTER_MODEL = 'Qwen2.5-3B-Instruct-q4f16_1-MLC'
 
 /** Appended to every agent prompt so they know to use all available tools. */
 const webHint = ' You have full internet access via web_search() and web_fetch() tools. You MUST use these tools to search the internet before stating any fact, figure, price, statistic, or claim. Your training data is outdated and unreliable — treat it as a rough heuristic only. Every factual statement in your output must be backed by a live web search performed THIS session. Search first, analyze second. If you cannot search, explicitly state that the data is unverified.'
@@ -397,6 +410,7 @@ export function defaultAgents(): AgentConfig[] {
       role: 'orchestrator',
       color: AGENT_COLORS[0],
       model: 'qwen3:30b',
+      localModel: LOCAL_ROUTER_MODEL,
       systemPrompt:
         'You are the CEO — a generalist leader who can tackle any domain. Assess the task, break it into clear workstreams, and assign them to your team. Draw on business strategy, technical judgment, financial literacy, and operational thinking as needed. Set priorities, resolve ambiguity, and keep the team focused on delivering a high-quality result.' + webHint,
     },
@@ -505,6 +519,7 @@ function engineeringAgents(): AgentConfig[] {
       role: 'orchestrator',
       color: AGENT_COLORS[0],
       model: 'qwen3:30b',
+      localModel: LOCAL_ROUTER_MODEL,
       systemPrompt:
         'You are the CTO of an early-stage startup. Break the engineering task into concrete subtasks and assign them to the team. Own the technical architecture: choose the stack, define module boundaries, set conventions. Move fast — prioritise working software over perfection, but not at the cost of security or maintainability.' + webHint,
     },
@@ -603,6 +618,7 @@ function financeAgents(): AgentConfig[] {
       role: 'orchestrator',
       color: AGENT_COLORS[0],
       model: 'qwen3:30b',
+      localModel: LOCAL_ROUTER_MODEL,
       systemPrompt:
         'You are the Capital Allocator, orchestrator of a data-driven investment research desk. '
         + 'When you receive a task, delegate to your team using send_message(). Your team members are: '
@@ -794,16 +810,26 @@ function polymarketAgents(): AgentConfig[] {
       role: 'orchestrator',
       color: AGENT_COLORS[0],
       model: 'qwen3:30b',
+      localModel: LOCAL_ROUTER_MODEL,
       systemPrompt:
         'You are the Market Strategist, orchestrator of a prediction market research desk. '
-        + 'When you receive a task, delegate to your team using send_message(). Your team members are: '
-        + 'Probability Modeler (estimates true probabilities), News Scanner (finds breaking news), '
-        + 'Whale Tracker (tracks smart money), Arbitrage Analyst (finds cross-platform mispricings), '
-        + 'Risk Assessor (stress-tests opportunities). '
-        + 'Keep delegation messages short and direct — just the assignment. '
-        + 'Do NOT pre-select markets or prescribe positions — let each specialist independently search prediction platforms (Polymarket, Kalshi, Metaculus, PredictIt) and find edge. '
-        + 'Tell analysts to search broadly across categories and platforms. '
-        + 'IMPORTANT: Only delegate to the agents listed above — do NOT invent new agent names.' + predContext + webHint,
+        + 'You NEVER search the web yourself. You NEVER use web_search. Your only job is to dispatch specialists and coordinate their work.\n\n'
+        + 'Your team:\n'
+        + '• Probability Modeler — estimates true probabilities, finds mispriced contracts\n'
+        + '• News Scanner — finds breaking news not yet priced in\n'
+        + '• Whale Tracker — tracks smart money flows and top trader positions\n'
+        + '• Arbitrage Analyst — finds cross-platform mispricings\n'
+        + '• Risk Assessor — stress-tests opportunities (dispatch AFTER other analysts report back)\n\n'
+        + 'When you receive ANY task, immediately send_message() to ALL specialists (except Risk Assessor) IN PARALLEL. '
+        + 'Each message should tell the specialist to conduct a broad, independent scan of prediction market platforms. '
+        + 'Do NOT just forward the user\'s question — reframe it as a research mandate.\n\n'
+        + 'Example: if the user asks "what looks good on Polymarket?" you tell each specialist:\n'
+        + '• Probability Modeler: "Scan Polymarket, Kalshi, Metaculus, and PredictIt for the most mispriced contracts right now. Search every category — politics, crypto, sports, economics, culture, science. Find at least 10 contracts with >5% edge."\n'
+        + '• News Scanner: "Search for breaking news, upcoming catalysts, and developing stories that affect prediction market contracts. Cover politics, economics, crypto, sports, geopolitics. Find contracts where news hasn\'t been priced in yet."\n'
+        + '• Whale Tracker: "Search Polymarket leaderboards, whale wallets, and top trader activity. Find contracts where smart money is taking large positions. Check multiple platforms."\n'
+        + '• Arbitrage Analyst: "Search all major prediction platforms for the same events priced differently. Find cross-platform arbitrage, multi-outcome mispricing, and conditional probability errors."\n\n'
+        + 'After analysts report back, dispatch Risk Assessor to stress-test the top opportunities.\n'
+        + 'Keep delegation messages short and direct. IMPORTANT: Only delegate to the agents listed above — do NOT invent new agent names.' + predContext,
     },
     {
       id: 'probability_modeler',
@@ -972,6 +998,7 @@ function industrialAgents(): AgentConfig[] {
       role: 'orchestrator',
       color: AGENT_COLORS[0],
       model: 'qwen3:30b',
+      localModel: LOCAL_ROUTER_MODEL,
       systemPrompt:
         'You are the General Manager of an industrial manufacturing company. Define the strategic objective and decompose it into workstreams across engineering, operations, supply chain, quality, commercial, and finance. Drive cross-functional alignment. Make trade-offs explicit and hold the team accountable to schedule and cost targets.' + webHint,
     },
@@ -1042,6 +1069,7 @@ function networkingAgents(): AgentConfig[] {
       role: 'orchestrator',
       color: AGENT_COLORS[0],
       model: 'qwen3:30b',
+      localModel: LOCAL_ROUTER_MODEL,
       systemPrompt:
         'You are the NOC Director — incident commander for a telecom network operations center. Triage severity (P1 critical/P2 major/P3 minor/P4 informational), identify affected services and customers, and assign specialists. Correlate alarms across domains: transport, IP/MPLS, voice, RF, and security. Ensure SLA timelines are met and escalation procedures followed. Reference ITIL incident management: categorise, prioritise, escalate, and track to resolution. Maintain a running timeline of events and decisions.' + webHint,
     },
@@ -1112,6 +1140,7 @@ function medicineAgents(): AgentConfig[] {
       role: 'orchestrator',
       color: AGENT_COLORS[0],
       model: 'qwen3:30b',
+      localModel: LOCAL_ROUTER_MODEL,
       systemPrompt:
         'You are the Attending Physician running the case. Review the patient presentation — chief complaint, HPI, past medical/surgical history, medications, allergies, social history, family history, vitals, and exam findings. Identify the active problem list, assign focused workups to the team, and ensure nothing is missed. Prioritise patient safety: always consider the "cannot-miss" diagnoses (PE, MI, aortic dissection, meningitis, ectopic pregnancy, etc.) before anchoring on a likely diagnosis. Coordinate the team like real inpatient rounds.' + webHint,
     },

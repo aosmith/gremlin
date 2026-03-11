@@ -1,8 +1,12 @@
 /**
  * Auto-tune engine: detect hardware, recommend models, apply optimal config.
+ * Includes AI-powered recommendations via in-browser WebLLM.
  */
 
-import type { AgentConfig } from './types'
+import type { AgentConfig, LLMProviderConfig } from './types'
+import { BUILTIN_MODES, PROVIDERS, agentsForMode } from './types'
+import { isWebGPUAvailable, callWebLLM } from './webllm'
+import type { ProgressCallback } from './webllm'
 
 // ── Hardware & model detection ────────────────────────────────────────────────
 
@@ -401,4 +405,230 @@ export function suggestModelsForHardware(
       installed: installedNames.has(m.name),
       pullCommand: `ollama pull ${m.name}`,
     }))
+}
+
+// ── AI-powered recommendation via WebLLM ─────────────────────────────────────
+
+/** Model family descriptions for the AI prompt — tells the 3B model what each family is good at */
+const MODEL_DESCRIPTIONS: Record<string, string> = {
+  'qwen3': 'Fast MoE architecture (3.3B active params in 30B version). Excellent orchestration, delegation, JSON output, tool calling. Good general-purpose.',
+  'qwen2.5-coder': 'Purpose-built for code generation, editing, and debugging. Top-tier for all software engineering tasks. Weak at non-code tasks.',
+  'deepseek-r1': 'Deep reasoning model. Outputs chain-of-thought in <think> tags. Best for analysis, risk assessment, diagnostics, probability estimation.',
+  'command-r': 'Research/RAG specialist with built-in citation support. Best for web research, document analysis, financial filings, news synthesis.',
+  'qwq': 'Purpose-built for reasoning and synthesis. Excellent at combining multiple inputs into coherent summaries. Best synthesizer available.',
+  'mistral-small': 'Fast, efficient general model (14GB at 24b). Best native JSON/tool calling. Good for manufacturing, operations, networking, editing tasks.',
+  'llama3': 'Strong general-purpose model from Meta. Balanced across all tasks. Good default when no specialist needed.',
+  'gemma': 'Google model, good at coding and general tasks. Compact and efficient.',
+  'phi': 'Microsoft model, strong at coding and reasoning for its size. Very efficient.',
+}
+
+export interface AIRecommendation extends TuneRecommendation {
+  /** Per-mode assignments: mode id → agent id → model name */
+  modeAssignments: Record<string, Record<string, string>>
+  /** Raw AI reasoning text */
+  aiReasoning: string
+}
+
+/**
+ * Use the in-browser WebLLM model to analyze hardware, installed models,
+ * cloud providers, and all agent roles across every mode, then recommend
+ * optimal assignments. Falls back to computeRecommendation() if WebGPU
+ * is unavailable or the AI call fails.
+ */
+export async function computeAIRecommendation(
+  hardware: HardwareProfile,
+  models: InstalledModel[],
+  cloudProviders: LLMProviderConfig[],
+  localModel: string,
+  onProgress?: ProgressCallback,
+  onStatus?: (status: string) => void,
+): Promise<AIRecommendation | null> {
+  if (!isWebGPUAvailable()) return null
+  if (models.length === 0 && cloudProviders.length === 0) return null
+
+  const usableVRAM = Math.max(hardware.gpuMemoryGB - 5, hardware.gpuMemoryGB * 0.5)
+
+  // Gather all agents from all builtin modes
+  const modeAgents: { mode: string; modeName: string; agents: { id: string; name: string; role: string; roleClass: AgentRoleClass }[] }[] = []
+  for (const mode of BUILTIN_MODES) {
+    if (mode.id === 'tuning') continue
+    const agents = agentsForMode(mode.id)
+    if (agents.length === 0) continue
+    modeAgents.push({
+      mode: mode.id,
+      modeName: mode.name,
+      agents: agents.map(a => ({
+        id: a.id,
+        name: a.name,
+        role: a.role,
+        roleClass: classifyAgentRole(a),
+      })),
+    })
+  }
+
+  // Build local model info string
+  const fittingLocal = models.filter(m => m.sizeGB <= usableVRAM)
+  const localModelInfo = fittingLocal
+    .map(m => {
+      const desc = MODEL_DESCRIPTIONS[m.family] || 'General-purpose model.'
+      return `  - ${m.name} (${m.sizeGB}GB, family: ${m.family}): ${desc}`
+    }).join('\n')
+
+  // Build cloud provider info string
+  const cloudInfo = cloudProviders.map(cp => {
+    const preset = PROVIDERS.find(p => p.id === cp.id)
+    const providerName = preset?.name || cp.id
+    return `  - "${cp.model}" via ${providerName} (cloud, no VRAM cost, unlimited parallel calls)`
+  }).join('\n')
+
+  // All available model names for validation
+  const allAvailableModels = new Set([
+    ...fittingLocal.map(m => m.name),
+    ...cloudProviders.map(cp => cp.model),
+  ])
+
+  if (allAvailableModels.size === 0) return null
+
+  // Build agent summary per mode
+  const modeInfo = modeAgents.map(m => {
+    const agentList = m.agents.map(a => `  - ${a.id} "${a.name}" [${a.role}] → role_class: ${a.roleClass}`).join('\n')
+    return `MODE: ${m.modeName} (${m.mode})\n${agentList}`
+  }).join('\n\n')
+
+  // Build the model availability section
+  let modelSection = ''
+  if (localModelInfo) {
+    modelSection += `LOCAL MODELS (Ollama, fit in VRAM):\n${localModelInfo}\n`
+  }
+  if (cloudInfo) {
+    modelSection += `\nCLOUD MODELS (API providers, no VRAM constraint):\n${cloudInfo}\n`
+  }
+
+  const prompt = `You are an AI model assignment optimizer. Given hardware specs, available models (local + cloud), and agent definitions across multiple modes, assign the BEST model to each agent.
+
+HARDWARE:
+- GPU: ${hardware.gpuName}
+- Total Memory: ${hardware.totalMemoryGB}GB
+- Usable VRAM: ${usableVRAM.toFixed(1)}GB (after OS overhead)
+- CPU Cores: ${hardware.cpuCores}
+- Platform: ${hardware.platform}/${hardware.arch}
+
+CONSTRAINTS:
+- Local Ollama models load ONE at a time into VRAM (MAX_LOADED_MODELS=1). Model swapping takes 10-30 seconds. Minimize distinct local models per mode.
+- Cloud models have NO VRAM cost and support unlimited parallel calls. Prefer cloud models for roles needing high quality or when local VRAM is limited.
+- If both local and cloud models are available, use cloud for quality-critical roles (reasoning, synthesis) and local for latency-sensitive roles (orchestrator) or when privacy matters.
+
+AVAILABLE MODELS:
+${modelSection}
+ROLE CLASSES:
+- orchestrator: Delegates tasks, reads reports, outputs JSON with messages. Needs fast response, good JSON output.
+- code: Writes/edits code. Needs strong code generation.
+- reasoning: Deep analysis, risk assessment, diagnostics. Needs chain-of-thought.
+- research: Web research, document analysis, citations. Needs RAG/citation ability.
+- synthesis: Combines multiple inputs into final report. Needs reasoning + writing.
+- general: Miscellaneous tasks. Needs balanced capabilities.
+
+AGENTS BY MODE:
+${modeInfo}
+
+RULES:
+1. Match model strengths to role classes
+2. Minimize distinct LOCAL models per mode to reduce swap overhead
+3. Cloud models can be used freely without swap penalty
+4. Every agent MUST get a model assignment — use exact model names from the lists above
+5. Pick ONE global default model (the best all-rounder from any source)
+
+Respond with ONLY valid JSON, no other text:
+{
+  "reasoning": "Brief explanation of your strategy",
+  "globalModel": "model_name",
+  "strategy": "single-model" | "dual-model" | "multi-model",
+  "modes": {
+    "mode_id": {
+      "agent_id": "model_name",
+      ...
+    },
+    ...
+  }
+}`
+
+  try {
+    onStatus?.('Loading AI model...')
+    const response = await callWebLLM(
+      [{ role: 'user', content: prompt }],
+      localModel,
+      2048,
+      onProgress,
+    )
+    onStatus?.('Parsing recommendation...')
+
+    // Extract JSON from response (handle markdown code blocks)
+    let jsonStr = response.trim()
+    const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/)
+    if (fenceMatch) jsonStr = fenceMatch[1].trim()
+
+    // Try to find JSON object if there's extra text
+    const braceStart = jsonStr.indexOf('{')
+    const braceEnd = jsonStr.lastIndexOf('}')
+    if (braceStart >= 0 && braceEnd > braceStart) {
+      jsonStr = jsonStr.slice(braceStart, braceEnd + 1)
+    }
+
+    const parsed = JSON.parse(jsonStr) as {
+      reasoning: string
+      globalModel: string
+      strategy: string
+      modes: Record<string, Record<string, string>>
+    }
+
+    // Validate: ensure globalModel is an available model (local or cloud)
+    if (!allAvailableModels.has(parsed.globalModel)) {
+      // Pick the closest match or first available
+      parsed.globalModel = models.find(m => parsed.globalModel.includes(m.family))?.name
+        || cloudProviders[0]?.model
+        || models[0]?.name
+        || ''
+    }
+
+    // Validate all mode assignments reference available models (local or cloud)
+    const modeAssignments: Record<string, Record<string, string>> = {}
+    const flatAssignments: Record<string, string> = {}
+
+    for (const ma of modeAgents) {
+      const modeMap = parsed.modes?.[ma.mode] || {}
+      const validated: Record<string, string> = {}
+      for (const agent of ma.agents) {
+        let assigned = modeMap[agent.id]
+        if (!assigned || !allAvailableModels.has(assigned)) {
+          // Fallback: use global model
+          assigned = parsed.globalModel
+        }
+        validated[agent.id] = assigned
+        flatAssignments[agent.id] = assigned
+      }
+      modeAssignments[ma.mode] = validated
+    }
+
+    // Map strategy string to type
+    const strategyMap: Record<string, TuneRecommendation['strategy']> = {
+      'single-model': 'single-model',
+      'dual-model': 'dual-model',
+      'multi-model': 'multi-model',
+    }
+    const strategy = strategyMap[parsed.strategy] || 'multi-model'
+
+    return {
+      strategy,
+      assignments: flatAssignments,
+      globalModel: parsed.globalModel,
+      reasoning: parsed.reasoning || 'AI-optimized model assignments.',
+      warnings: [],
+      suggestedModels: suggestModelsForHardware(hardware, models),
+      modeAssignments,
+      aiReasoning: parsed.reasoning || '',
+    }
+  } catch (err) {
+    console.warn('[autotune] AI recommendation failed, falling back to scored system:', err)
+    return null
+  }
 }

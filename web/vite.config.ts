@@ -41,10 +41,17 @@ function corsProxy(): Plugin {
           for await (const chunk of req) chunks.push(chunk as Buffer)
           const body = chunks.length > 0 ? Buffer.concat(chunks) : undefined
 
-          // Forward headers, stripping hop-by-hop
+          // Forward headers, stripping hop-by-hop and browser-only headers
+          // that can cause targets to reject the request
+          const skipReqHeaders = new Set([
+            'x-target-url', 'host', 'connection',
+            'origin', 'referer',
+            'sec-fetch-mode', 'sec-fetch-site', 'sec-fetch-dest',
+            'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform',
+          ])
           const fwdHeaders: Record<string, string> = {}
           for (const [k, v] of Object.entries(req.headers)) {
-            if (v && !['x-target-url', 'host', 'connection'].includes(k)) {
+            if (v && !skipReqHeaders.has(k)) {
               fwdHeaders[k] = Array.isArray(v) ? v[0] : v
             }
           }
@@ -55,28 +62,32 @@ function corsProxy(): Plugin {
             body,
           })
 
-          // Forward response with CORS headers
+          // Buffer the full response — Node.js fetch auto-decompresses, so
+          // we must strip content-encoding / content-length to avoid sending
+          // headers that don't match the (already decoded) body.
+          const respBody = Buffer.from(await resp.arrayBuffer())
+
           const respHeaders: Record<string, string> = {
             'access-control-allow-origin': '*',
             'access-control-expose-headers': '*',
           }
-          resp.headers.forEach((v, k) => { respHeaders[k] = v })
+          const stripHeaders = new Set([
+            'content-encoding', 'content-length', 'transfer-encoding',
+            'connection', 'keep-alive',
+          ])
+          resp.headers.forEach((v, k) => {
+            if (!stripHeaders.has(k)) respHeaders[k] = v
+          })
           // Re-set CORS in case the target overwrote them
           respHeaders['access-control-allow-origin'] = '*'
+          respHeaders['content-length'] = String(respBody.length)
 
           res.writeHead(resp.status, respHeaders)
-
-          if (resp.body) {
-            const reader = (resp.body as ReadableStream<Uint8Array>).getReader()
-            while (true) {
-              const { done, value } = await reader.read()
-              if (done) break
-              res.write(value)
-            }
-          }
-          res.end()
+          res.end(respBody)
         } catch (err: unknown) {
-          res.writeHead(502, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' })
+          if (!res.headersSent) {
+            res.writeHead(502, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' })
+          }
           res.end(`Proxy error: ${err instanceof Error ? err.message : String(err)}`)
         }
       })
@@ -144,7 +155,13 @@ function ollamaSidecar(): Plugin {
           setTimeout(() => {
             child = spawn('ollama', ['serve'], {
               stdio: ['ignore', 'pipe', 'pipe'],
-              env: { ...process.env, OLLAMA_NUM_CTX: '8192' },
+              env: {
+                ...process.env,
+                OLLAMA_NUM_CTX: '8192',        // cap context to save KV cache memory
+                OLLAMA_MAX_LOADED_MODELS: '1',  // only one model in VRAM at a time (prevents OOM)
+                OLLAMA_NUM_PARALLEL: '4',       // concurrent requests per loaded model
+                OLLAMA_KEEP_ALIVE: '30s',       // keep model warm briefly between same-model batches
+              },
             })
             child.stdout?.on('data', (d: Buffer) => {
               const line = d.toString().trim()
@@ -155,7 +172,7 @@ function ollamaSidecar(): Plugin {
               if (line && !line.includes('already in use')) console.log(`[ollama-sidecar] ${line}`)
             })
             child.on('exit', () => { child = null })
-            console.log('[ollama-sidecar] started with OLLAMA_NUM_CTX=8192')
+            console.log('[ollama-sidecar] started with NUM_CTX=8192 MAX_LOADED=1 PARALLEL=4')
           }, 1000) // brief delay for old process to die
         })
       })

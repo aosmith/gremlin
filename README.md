@@ -51,38 +51,24 @@ Once you have a provider ready, open GREMLIN → **Settings** (⚙) → pick you
 |---|---|---|
 | Node.js | 18+ | [nodejs.org](https://nodejs.org) |
 
-### Build
+### Run
 
 ```bash
 git clone https://github.com/aosmith/gremlin.git
-cd gremlin
-bash setup.sh
-```
-
-This installs dependencies and builds everything. Output: `web/dist/index.html` — a single self-contained file.
-
-Or build manually:
-
-```bash
-cd web
+cd gremlin/web
 npm install
-npm run build
-```
-
-### Serve
-
-```bash
-# Any static file server works:
-npx serve dist               # → http://localhost:3000
-python3 -m http.server 3000 -d dist
-```
-
-### Development (live reload)
-
-```bash
-cd web
 npm run dev   # → http://localhost:5173
 ```
+
+The Vite dev server **is** the runtime. It provides a built-in CORS proxy for web search, auto-starts Ollama (if installed), and launches the browser sidecar. Every user runs `npm run dev` locally — there is no separate production deployment step.
+
+### Build (optional)
+
+```bash
+npm run build   # → dist/index.html (single self-contained file)
+```
+
+The built file can be hosted statically, but loses the CORS proxy and sidecars. For the full experience, use `npm run dev`.
 
 ---
 
@@ -156,6 +142,7 @@ Agents can search the web and fetch pages during a run. Two search tools are ava
 | **Serper** (Google) | Yes | Free tier: 2,500 queries/mo |
 | **Tavily** | Yes | AI-optimised, free tier: 1,000 queries/mo |
 | **SearXNG** | No | Self-hosted; set your instance URL in Settings |
+| **Cloudflare** | Yes (Account ID + API token) | Browser Rendering crawl — renders JS-heavy pages; also powers `web_fetch` |
 
 ---
 
@@ -289,6 +276,7 @@ gremlin/
 │   │   │   ├── tableCards.ts       # Prose enhancement (tables, callouts)
 │   │   │   ├── sanitize.ts        # DOMPurify XSS sanitization wrapper
 │   │   │   ├── search.ts          # Web search implementation
+│   │   │   ├── cloudflare.ts     # Cloudflare Browser Rendering crawl
 │   │   │   ├── teamGenerator.ts   # Dynamic team generation
 │   │   │   └── headless.ts        # Headless browser integration
 │   │   └── components/
@@ -318,19 +306,13 @@ gremlin/
 
 ## Deployment
 
-GREMLIN is a single HTML file (`web/dist/index.html`) that can be hosted anywhere — Cloudflare Pages, GitHub Pages, Netlify, S3, or any static file server.
+The recommended way to run GREMLIN is `npm run dev` on your local machine. The Vite dev server provides a CORS proxy, auto-starts Ollama, and launches the browser sidecar — none of which are available when hosting the built file statically.
 
-### What works out of the box
+### Static hosting (advanced)
 
-- **Most LLM providers** — OpenAI, Anthropic, OpenRouter, Gemini, Together all support browser CORS natively. Just add your API key in Settings.
-- **Web search** — DuckDuckGo is the default provider, routed through a CORS proxy. No API key needed.
-- **All UI, modes, and agents** — everything runs client-side.
+The built file (`web/dist/index.html`) can be hosted on Cloudflare Pages, GitHub Pages, Netlify, etc. Most LLM providers (OpenAI, Anthropic, OpenRouter, Gemini, Together) support browser CORS natively, so they work without a proxy. However, web search and some services (Groq, DuckDuckGo, Brave Search) need a CORS proxy.
 
-### CORS proxy
-
-A few services block browser requests (Groq, DuckDuckGo, Brave Search). GREMLIN ships with a default Cloudflare Worker proxy for those. Providers that support browser CORS (OpenAI, Anthropic, OpenRouter, Gemini, Together, Serper, Tavily, and all local providers) always go direct.
-
-To deploy your own proxy:
+To deploy your own proxy for static hosting:
 
 ```bash
 cd proxy
@@ -338,7 +320,7 @@ npx wrangler login
 npx wrangler deploy
 ```
 
-Then update the proxy URL in Settings → Advanced, or in `web/src/lib/types.ts` (`DEFAULT_SETTINGS.proxyUrl`).
+Then update the proxy URL in Settings → Advanced.
 
 ### Local LLM providers (Ollama, LM Studio)
 
@@ -357,10 +339,10 @@ Ollama only accepts requests from `localhost` by default. LM Studio has a simila
 **`API 401 / 403`**
 → Check your API key in Settings.
 
-**`CORS error` in browser console**
-→ If opening locally: serve over HTTP, not `file://`: `npx serve web/dist`
+**`CORS error` or `Failed to fetch` in browser console**
+→ Make sure you are running via `npm run dev` — the dev server provides the CORS proxy
+→ If using the built HTML file: serve over HTTP, not `file://`, and configure a proxy URL in Settings
 → If using Ollama from a hosted site: set `OLLAMA_ORIGINS=https://your-domain.com` when starting Ollama
-→ If web search fails: check that the CORS proxy URL is set in Settings (the default should work)
 
 **WebLLM: `WebGPU is not available`**
 → Use Chrome 113+ or Edge 113+. Firefox and Safari do not support WebGPU by default.
