@@ -3,10 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
-    "build:wasm": "RUSTFLAGS='-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint' wasm-pack build crates/coordinator --target web --out-dir \"$(pwd)/web/src/wasm\" --release && node web/scripts/encode-wasm.mjs",
     "install:web": "cd web && npm install",
     "dev": "cd web && npm run dev",
-    "build": "npm run build:wasm && cd web && npm run build",
+    "build": "cd web && npm run build",
     "preview": "cd web && npm run preview",
     "setup": "bash setup.sh"
   }

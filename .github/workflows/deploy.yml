@@ -23,19 +23,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-
-      - name: Build WASM
-        run: |
-          RUSTFLAGS="-C target-feature=+simd128,+bulk-memory,+nontrapping-fptoint" \
-            wasm-pack build crates/coordinator --target web --out-dir "$(pwd)/web/src/wasm" --release
-
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -45,9 +32,6 @@ jobs:
       - name: Install deps
         run: npm ci
         working-directory: web
-
-      - name: Encode WASM
-        run: node web/scripts/encode-wasm.mjs
 
       - name: Build
         run: npm run build
