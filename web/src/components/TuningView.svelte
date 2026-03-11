@@ -1,11 +1,28 @@
 <script lang="ts">
   import { store } from '../lib/store.svelte'
-  import { detectHardware, detectOllamaModels, isOllamaRunning, computeRecommendation, computeAIRecommendation, suggestModelsForHardware } from '../lib/autotune'
+  import { detectHardware, detectOllamaModels, isOllamaRunning, computeRecommendation, computeAIRecommendation, classifyAgentRole, suggestModelsForHardware } from '../lib/autotune'
   import type { HardwareProfile, InstalledModel, TuneRecommendation, AIRecommendation, SuggestedModel } from '../lib/autotune'
   import { pullOllamaModel } from '../lib/api'
   import { agentsForMode, BUILTIN_MODES, LOCAL_ROUTER_MODEL } from '../lib/types'
   import type { AgentConfig } from '../lib/types'
   import { isWebGPUAvailable } from '../lib/webllm'
+
+  // ── Types ───────────────────────────────────────────────────────────────────
+  interface AgentAssignment {
+    id: string
+    name: string
+    role: string
+    roleClass: string
+    defaultModel: string
+    recommendedModel: string
+    changed: boolean
+  }
+  interface ModeAssignment {
+    modeId: string
+    modeName: string
+    agents: AgentAssignment[]
+    changeCount: number
+  }
 
   // ── State ──────────────────────────────────────────────────────────────────
   let phase = $state<'detecting' | 'ai-analyzing' | 'ready' | 'applying'>('detecting')
@@ -21,16 +38,68 @@
   let aiStatus = $state('')
   let aiProgress = $state(0)
   let aiProgressText = $state('')
-  let useAI = $state(true)  // whether to attempt AI recommendation
+  let useAI = $state(true)
+  /** Per-mode assignments computed for display — scored path fills this too */
+  let modeAssignments = $state<ModeAssignment[]>([])
+  let expandedMode = $state<string | null>(null)
 
   const usableVRAM = $derived(hardware ? Math.round(hardware.gpuMemoryGB * 0.75 * 10) / 10 : 0)
   const activeRec = $derived(aiRecommendation ?? recommendation)
+  const totalChanges = $derived(modeAssignments.reduce((sum, m) => sum + m.changeCount, 0))
+
+  /** Build per-agent assignment table for all modes */
+  function buildModeAssignments(
+    hw: HardwareProfile,
+    installedModels: InstalledModel[],
+    aiRec: AIRecommendation | null,
+  ): ModeAssignment[] {
+    const result: ModeAssignment[] = []
+    for (const mode of BUILTIN_MODES) {
+      if (mode.id === 'tuning') continue
+      const agents = agentsForMode(mode.id)
+      if (agents.length === 0) continue
+
+      // Get recommended assignments for this mode
+      let recMap: Record<string, string>
+      if (aiRec?.modeAssignments?.[mode.id]) {
+        recMap = aiRec.modeAssignments[mode.id]
+      } else if (installedModels.length > 0) {
+        const modeRec = computeRecommendation(hw, installedModels, agents)
+        recMap = modeRec.assignments
+      } else {
+        recMap = {}
+      }
+
+      const agentAssigns: AgentAssignment[] = agents.map(a => {
+        const defaultModel = a.model || store.settings.model || ''
+        const recommended = recMap[a.id] || defaultModel
+        return {
+          id: a.id,
+          name: a.name,
+          role: a.role,
+          roleClass: classifyAgentRole(a),
+          defaultModel,
+          recommendedModel: recommended,
+          changed: recommended !== defaultModel,
+        }
+      })
+
+      result.push({
+        modeId: mode.id,
+        modeName: mode.name,
+        agents: agentAssigns,
+        changeCount: agentAssigns.filter(a => a.changed).length,
+      })
+    }
+    return result
+  }
 
   // ── Run detection on mount ──────────────────────────────────────────────────
   async function detect() {
     phase = 'detecting'
     error = ''
     aiRecommendation = null
+    modeAssignments = []
     try {
       hardware = await detectHardware()
       const endpoint = store.settings.apiEndpoint || 'http://localhost:11434/v1/chat/completions'
@@ -66,8 +135,12 @@
           }
         } catch (e) {
           console.warn('[tuning] AI recommendation failed:', e)
-          // Fall through to scored recommendation
         }
+      }
+
+      // Build per-agent assignment table for ALL modes
+      if (hardware && (models.length > 0 || aiRecommendation)) {
+        modeAssignments = buildModeAssignments(hardware, models, aiRecommendation)
       }
 
       phase = 'ready'
@@ -110,15 +183,17 @@
 
   const missingSuggested = $derived(suggested.filter((s) => !s.installed))
 
-  // Models referenced in the recommendation that aren't installed
+  // All unique recommended models and whether they're available
   const recModels = $derived(() => {
-    const rec = activeRec
-    if (!rec) return [] as { name: string, installed: boolean }[]
-    const unique = [...new Set(Object.values(rec.assignments))]
+    const allModels = new Set<string>()
+    for (const ma of modeAssignments) {
+      for (const a of ma.agents) {
+        if (a.recommendedModel) allModels.add(a.recommendedModel)
+      }
+    }
     const installedNames = new Set(models.map((m) => m.name))
-    // Cloud models are always "installed" (available via API)
     const cloudModelNames = new Set(store.settings.llmProviders.map(p => p.model))
-    return unique.filter(Boolean).map((name) => ({
+    return [...allModels].map((name) => ({
       name,
       installed: installedNames.has(name) || cloudModelNames.has(name),
     }))
@@ -150,28 +225,18 @@
     if (rec.globalModel) {
       store.updateSettings({ model: rec.globalModel })
     }
-    // Apply per-agent model assignments to ALL builtin modes
-    const aiRec = aiRecommendation
-    for (const mode of BUILTIN_MODES) {
-      if (mode.id === 'tuning') continue
-      const agents = agentsForMode(mode.id)
+    // Apply per-agent model assignments from the computed modeAssignments
+    for (const ma of modeAssignments) {
+      const agents = agentsForMode(ma.modeId)
       if (agents.length === 0) continue
-
-      // Use AI per-mode assignments if available, otherwise fall back to scored
-      let modeAssignments: Record<string, string>
-      if (aiRec?.modeAssignments?.[mode.id]) {
-        modeAssignments = aiRec.modeAssignments[mode.id]
-      } else {
-        const modeRec = computeRecommendation(hardware!, models, agents)
-        modeAssignments = modeRec.assignments
-      }
-
       for (const agent of agents) {
-        agent.model = modeAssignments[agent.id] || rec.globalModel || ''
+        const assign = ma.agents.find(a => a.id === agent.id)
+        if (assign) {
+          agent.model = assign.recommendedModel
+        }
       }
-      // Save via localStorage directly
       try {
-        localStorage.setItem(`gremlin_agents_${mode.id}`, JSON.stringify(agents))
+        localStorage.setItem(`gremlin_agents_${ma.modeId}`, JSON.stringify(agents))
       } catch { /* ignore */ }
     }
     store.switchMode('general')
@@ -299,7 +364,7 @@
                 class="primary btn-sm"
                 onclick={async () => { for (const m of missingRecModels) await pullModel(m.name) }}
                 disabled={installingAll || pullingModel !== null}
-              >Install Recommended ({missingRecModels.length})</button>
+              >Install Missing ({missingRecModels.length})</button>
             {/if}
           </div>
           <div class="rec-card">
@@ -310,69 +375,112 @@
               {/if}
             </div>
             <p class="rec-reasoning">{activeRec.reasoning}</p>
-
-            <!-- Per-mode breakdown for AI recommendation -->
-            {#if aiRecommendation?.modeAssignments}
-              <div class="mode-assignments">
-                {#each Object.entries(aiRecommendation.modeAssignments) as [modeId, agents]}
-                  {@const modeName = BUILTIN_MODES.find(m => m.id === modeId)?.name || modeId}
-                  {@const uniqueModels = [...new Set(Object.values(agents))]}
-                  <div class="mode-assign-row">
-                    <span class="mode-assign-name">{modeName}</span>
-                    <span class="mode-assign-models">
-                      {#each uniqueModels as model, i}
-                        <span class="mode-model-chip">{model}</span>
-                      {/each}
-                    </span>
-                  </div>
-                {/each}
-              </div>
+            {#if totalChanges > 0}
+              <p class="rec-changes">{totalChanges} agent{totalChanges === 1 ? '' : 's'} will change models across {modeAssignments.filter(m => m.changeCount > 0).length} mode{modeAssignments.filter(m => m.changeCount > 0).length === 1 ? '' : 's'}</p>
+            {:else if modeAssignments.length > 0}
+              <p class="rec-no-changes">Defaults are already optimal for your hardware</p>
             {/if}
+          </div>
+        </div>
+      {/if}
 
-            <!-- Model assignment list -->
-            {#if recModels().length > 0}
-              <div class="rec-models">
-                {#each recModels() as m}
-                  <div class="rec-model-row" class:installed={m.installed}>
-                    <span class="rec-model-name">{m.name}</span>
-                    {#if m.installed}
-                      <span class="installed-badge">{store.settings.llmProviders.some(p => p.model === m.name) ? 'Cloud' : 'Installed'}</span>
-                    {:else if pullingModel === m.name}
-                      <span class="pull-status">{pullProgress}</span>
+      <!-- Per-mode agent assignments -->
+      {#if modeAssignments.length > 0}
+        <div class="tuning-section">
+          <h2 class="section-title">Model Assignments</h2>
+          <div class="mode-list">
+            {#each modeAssignments as ma}
+              <div class="mode-block">
+                <button
+                  class="mode-header"
+                  onclick={() => expandedMode = expandedMode === ma.modeId ? null : ma.modeId}
+                >
+                  <span class="mode-header-left">
+                    <span class="mode-name">{ma.modeName}</span>
+                    <span class="mode-agent-count">{ma.agents.length} agents</span>
+                  </span>
+                  <span class="mode-header-right">
+                    {#if ma.changeCount > 0}
+                      <span class="change-badge">{ma.changeCount} change{ma.changeCount === 1 ? '' : 's'}</span>
                     {:else}
-                      <button
-                        class="ghost btn-sm"
-                        onclick={() => pullModel(m.name)}
-                        disabled={pullingModel !== null}
-                      >Pull</button>
+                      <span class="no-change-badge">no changes</span>
                     {/if}
+                    <span class="expand-arrow" class:expanded={expandedMode === ma.modeId}>&#9662;</span>
+                  </span>
+                </button>
+                {#if expandedMode === ma.modeId}
+                  <div class="agent-table">
+                    {#each ma.agents as agent}
+                      <div class="agent-row" class:changed={agent.changed}>
+                        <div class="agent-info">
+                          <span class="agent-name">{agent.name}</span>
+                          <span class="agent-role">{agent.roleClass}</span>
+                        </div>
+                        <div class="agent-models">
+                          {#if agent.changed}
+                            <span class="model-old">{agent.defaultModel || '(none)'}</span>
+                            <span class="model-arrow">&#8594;</span>
+                            <span class="model-new">{agent.recommendedModel}</span>
+                          {:else}
+                            <span class="model-same">{agent.recommendedModel || '(none)'}</span>
+                          {/if}
+                        </div>
+                      </div>
+                    {/each}
                   </div>
-                {/each}
+                {/if}
               </div>
-            {/if}
+            {/each}
+          </div>
+        </div>
+      {/if}
 
-            {#if activeRec.warnings.length > 0}
-              <div class="rec-warnings">
-                {#each activeRec.warnings as w}
-                  <div class="rec-warn-row">
-                    <p class="rec-warn">{w.text}</p>
-                    {#if w.pullModel}
-                      {#if models.some(m => m.name === w.pullModel)}
-                        <span class="installed-badge">Installed</span>
-                      {:else if pullingModel === w.pullModel}
-                        <span class="pull-status">{pullProgress}</span>
-                      {:else}
-                        <button
-                          class="ghost btn-sm"
-                          onclick={() => pullModel(w.pullModel!)}
-                          disabled={pullingModel !== null}
-                        >Pull {w.pullModel}</button>
-                      {/if}
-                    {/if}
-                  </div>
-                {/each}
+      <!-- Missing models needed -->
+      {#if missingRecModels.length > 0}
+        <div class="tuning-section">
+          <h2 class="section-title">Missing Models</h2>
+          <div class="rec-models">
+            {#each missingRecModels as m}
+              <div class="rec-model-row">
+                <span class="rec-model-name">{m.name}</span>
+                {#if pullingModel === m.name}
+                  <span class="pull-status">{pullProgress}</span>
+                {:else}
+                  <button
+                    class="ghost btn-sm"
+                    onclick={() => pullModel(m.name)}
+                    disabled={pullingModel !== null}
+                  >Pull</button>
+                {/if}
               </div>
-            {/if}
+            {/each}
+          </div>
+        </div>
+      {/if}
+
+      <!-- Warnings -->
+      {#if activeRec && activeRec.warnings.length > 0}
+        <div class="tuning-section">
+          <h2 class="section-title">Warnings</h2>
+          <div class="rec-warnings">
+            {#each activeRec.warnings as w}
+              <div class="rec-warn-row">
+                <p class="rec-warn">{w.text}</p>
+                {#if w.pullModel}
+                  {#if models.some(m => m.name === w.pullModel)}
+                    <span class="installed-badge">Installed</span>
+                  {:else if pullingModel === w.pullModel}
+                    <span class="pull-status">{pullProgress}</span>
+                  {:else}
+                    <button
+                      class="ghost btn-sm"
+                      onclick={() => pullModel(w.pullModel!)}
+                      disabled={pullingModel !== null}
+                    >Pull {w.pullModel}</button>
+                  {/if}
+                {/if}
+              </div>
+            {/each}
           </div>
         </div>
       {/if}
@@ -569,7 +677,6 @@
     border: 1px solid var(--glass-border);
     border-radius: var(--radius);
   }
-  .rec-model-row.installed { opacity: 0.6; }
   .rec-model-name { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--color-text); }
   .rec-warnings { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
   .rec-warn-row {
@@ -634,41 +741,91 @@
     vertical-align: middle;
   }
 
-  /* Per-mode assignments */
-  .mode-assignments {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin: 12px 0;
-    padding: 10px 12px;
-    background: var(--glass);
+  /* Change summary in recommendation card */
+  .rec-changes {
+    font-size: 12px;
+    color: var(--color-accent);
+    font-weight: 600;
+    margin-top: 8px;
+  }
+  .rec-no-changes {
+    font-size: 12px;
+    color: var(--color-text-3);
+    margin-top: 8px;
+  }
+
+  /* Per-mode assignment list */
+  .mode-list { display: flex; flex-direction: column; gap: 4px; }
+  .mode-block {
     border: 1px solid var(--glass-border);
     border-radius: var(--radius);
+    overflow: hidden;
   }
-  .mode-assign-row {
+  .mode-header {
+    all: unset;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
-    padding: 4px 0;
+    width: 100%;
+    padding: 10px 14px;
+    cursor: pointer;
+    background: var(--glass-light);
+    transition: background 0.15s;
+    box-sizing: border-box;
   }
-  .mode-assign-row + .mode-assign-row { border-top: 1px solid var(--glass-border); padding-top: 6px; }
-  .mode-assign-name {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--color-text-2);
-    min-width: 100px;
-  }
-  .mode-assign-models { display: flex; flex-wrap: wrap; gap: 4px; }
-  .mode-model-chip {
+  .mode-header:hover { background: var(--glass); }
+  .mode-header-left, .mode-header-right { display: flex; align-items: center; gap: 8px; }
+  .mode-name { font-size: 13px; font-weight: 600; color: var(--color-text); }
+  .mode-agent-count { font-size: 11px; color: var(--color-text-4); }
+  .change-badge {
     font-size: 10px;
-    font-family: var(--font-mono);
-    padding: 2px 6px;
-    border-radius: 3px;
-    background: var(--glass-tinted);
-    border: 1px solid var(--glass-tinted-border);
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: rgba(63,185,80,0.12);
     color: var(--color-accent);
   }
+  .no-change-badge {
+    font-size: 10px;
+    padding: 2px 7px;
+    color: var(--color-text-4);
+  }
+  .expand-arrow {
+    font-size: 10px;
+    color: var(--color-text-4);
+    transition: transform 0.15s;
+  }
+  .expand-arrow.expanded { transform: rotate(180deg); }
+
+  /* Agent assignment table */
+  .agent-table {
+    border-top: 1px solid var(--glass-border);
+  }
+  .agent-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 7px 14px;
+    font-size: 12px;
+  }
+  .agent-row + .agent-row { border-top: 1px solid var(--glass-border); }
+  .agent-row.changed { background: rgba(63,185,80,0.04); }
+  .agent-info { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .agent-name { font-weight: 600; color: var(--color-text-2); white-space: nowrap; }
+  .agent-role {
+    font-size: 10px;
+    color: var(--color-text-4);
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--glass);
+    white-space: nowrap;
+  }
+  .agent-models { display: flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; flex-shrink: 0; }
+  .model-old { color: var(--color-text-4); text-decoration: line-through; }
+  .model-arrow { color: var(--color-accent); font-size: 12px; }
+  .model-new { color: var(--color-accent); font-weight: 600; }
+  .model-same { color: var(--color-text-3); }
 
   /* AI analysis phase */
   .ai-analyzing {
