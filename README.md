@@ -54,13 +54,20 @@ Once you have a provider ready, open GREMLIN → **Settings** (⚙) → pick you
 ### Build
 
 ```bash
-git clone https://github.com/aosmith/agent.git gremlin
-cd gremlin/web
+git clone https://github.com/aosmith/gremlin.git
+cd gremlin
+bash setup.sh
+```
+
+This installs dependencies and builds everything. Output: `web/dist/index.html` — a single self-contained file.
+
+Or build manually:
+
+```bash
+cd web
 npm install
 npm run build
 ```
-
-Output: `web/dist/index.html` — a single self-contained file.
 
 ### Serve
 
@@ -210,35 +217,35 @@ Agents also have access to protocol tools (`send_message`, `mark_done`) for prov
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                          Browser                            │
-│                                                             │
-│  ┌─────────────────┐      ┌────────────────────────────┐   │
-│  │  Svelte 5 UI    │─────▶│  Coordinator (TypeScript)  │   │
-│  │  (TypeScript)   │◀─────│  • Agent registry          │   │
-│  │                 │      │  • Message routing          │   │
-│  │  Activity       │      │  • Session state            │   │
-│  │  Monitor        │      └────────────────────────────┘   │
-│  │  File Tree      │                                       │
-│  │  Code Viewer    │                                       │
-│  └────────┬────────┘                                       │
-│           │                                                │
-│  ┌────────▼────────┐    ┌──────────────────────────────┐  │
-│  │  AgentRunner.ts │    │  File System Access API      │  │
-│  │  • Calls LLM    │    │  write_file / read_file /    │  │
-│  │  • Tool loop    │───▶│  list_directory              │  │
-│  │  • Routes msgs  │    │  (Engineering mode only)     │  │
-│  │  • Web search   │    └──────────────────────────────┘  │
-│  └────────┬────────┘                                       │
-│           │ fetch()  or  WebGPU (WebLLM)                   │
-└───────────┼────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                         Browser                          │
+│                                                          │
+│  ┌─────────────────┐    ┌────────────────────────────┐   │
+│  │  Svelte 5 UI    │───▶│  Coordinator (TypeScript)  │   │
+│  │  (TypeScript)   │◀───│  • Agent registry          │   │
+│  │                 │    │  • Message routing          │   │
+│  │  Activity       │    │  • Session state            │   │
+│  │  Monitor        │    └────────────────────────────┘   │
+│  │  File Tree      │                                     │
+│  │  Code Viewer    │                                     │
+│  └────────┬────────┘                                     │
+│           │                                              │
+│  ┌────────▼────────┐    ┌────────────────────────────┐   │
+│  │  AgentRunner.ts │    │  File System Access API    │   │
+│  │  • Calls LLM    │    │  write_file / read_file /  │   │
+│  │  • Tool loop    │───▶│  list_directory            │   │
+│  │  • Routes msgs  │    │  (Engineering mode only)   │   │
+│  │  • Web search   │    └────────────────────────────┘   │
+│  └────────┬────────┘                                     │
+│           │ fetch()  or  WebGPU (WebLLM)                 │
+└───────────┼──────────────────────────────────────────────┘
             ▼
-   ┌─────────────────────────────────────┐
-   │  LLM                               │
-   │  Anthropic / OpenAI / Gemini /     │
-   │  Ollama / Groq / OpenRouter /      │
-   │  Together / WebLLM (WebGPU) / …   │
-   └─────────────────────────────────────┘
+   ┌─────────────────────────────────┐
+   │  LLM                           │
+   │  Anthropic / OpenAI / Gemini   │
+   │  Ollama / Groq / OpenRouter    │
+   │  Together / WebLLM (WebGPU)    │
+   └─────────────────────────────────┘
 ```
 
 ---
@@ -346,4 +353,4 @@ Ollama only accepts requests from `localhost` by default. LM Studio has a simila
 
 ## License
 
-MIT
+[PolyForm Noncommercial 1.0.0](LICENSE.md) — free for personal and noncommercial use.
