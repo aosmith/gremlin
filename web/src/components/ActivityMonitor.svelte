@@ -394,11 +394,11 @@
 
   .streaming-content {
     white-space: pre-wrap;
-    opacity: 0.7;
+    opacity: 0.5;
     max-height: 300px;
     overflow-y: auto;
-    mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
-    -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
+    font-family: var(--font-mono);
+    font-size: 11px;
   }
 
 </style>

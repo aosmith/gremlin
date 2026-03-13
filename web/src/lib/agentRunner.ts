@@ -419,6 +419,12 @@ export class AgentRunner {
 
         if (this.aborted) break
 
+        // ── Round sync: broadcast a digest of this round's work to all active agents ──
+        // This gives every agent shared context for the next round without creating
+        // a feedback loop — done/error agents won't run again, and the digest is a
+        // system message that doesn't trigger responses.
+        this.broadcastRoundDigest(pending, this.round)
+
         // Check if all workers are done so we can prompt the synthesizer
         const workers = agents.filter((a) => a.role === 'worker' || a.role === 'custom')
         const synthesizer = agents.find((a) => a.role === 'synthesizer')
@@ -705,6 +711,55 @@ export class AgentRunner {
   }
 
   /** Collect all worker outputs and feed them to the synthesizer for a final forced run. */
+  /**
+   * Broadcast a round digest to all agents that are still active (not done/error).
+   * Each agent receives a summary of what every OTHER agent produced this round,
+   * giving shared context for the next round. Skips agents that just ran (they
+   * already know their own output) and agents that are finished.
+   */
+  private broadcastRoundDigest(justRan: AgentConfig[], round: number): void {
+    // Collect what each agent produced this round (last assistant message)
+    const summaries = new Map<string, string>()
+    for (const agent of justRan) {
+      const hist = this.histories.get(agent.id) ?? []
+      const lastReply = [...hist].reverse().find((m) => m.role === 'assistant')
+      if (!lastReply) continue
+      // Truncate long outputs to keep the digest manageable
+      const content = lastReply.content.length > 800
+        ? lastReply.content.slice(0, 800) + '…'
+        : lastReply.content
+      summaries.set(agent.id, content)
+    }
+
+    if (summaries.size < 2) return  // nothing useful to share if only 0-1 agents ran
+
+    // Send digest to each active agent (excluding their own output)
+    for (const agent of this.agents) {
+      const status = coord.getAgentStatus(agent.id)
+      if (status === 'done' || status === 'error') continue
+
+      const otherSummaries = [...summaries.entries()]
+        .filter(([id]) => id !== agent.id)
+        .map(([id, content]) => {
+          const name = this.configs.get(id)?.name ?? id
+          return `[${name}]: ${content}`
+        })
+
+      if (otherSummaries.length === 0) continue
+
+      this.emit({
+        fromAgent: 'system',
+        toAgent: agent.id,
+        content: `── Round ${round} digest ──\n${otherSummaries.join('\n\n')}`,
+        type: 'system',
+        timestamp: Date.now(),
+        round,
+      })
+    }
+
+    this.cb.onLog(`Round ${round} digest shared with ${this.agents.filter(a => { const s = coord.getAgentStatus(a.id); return s !== 'done' && s !== 'error' }).length} active agents`)
+  }
+
   private forceSynthesis(synthesizer: AgentConfig, agents: AgentConfig[]): void {
     const workers = agents.filter((a) => a.role === 'worker' || a.role === 'custom')
     const summaries = workers.map((w) => {
@@ -972,8 +1027,7 @@ Usually workers complete in one round. Choose (A) unless critical data is missin
         this.agentLatency.set(agent.id, (this.agentLatency.get(agent.id) ?? 0) + elapsed)
         this.agentTurns.set(agent.id, (this.agentTurns.get(agent.id) ?? 0) + 1)
 
-        // Clear streaming / progress state now that the LLM call is complete
-        this.cb.onStream?.(null, '', '')
+        // Clear progress bar (streaming text stays visible until messages are emitted below)
         this.cb.onProgress?.(null)
 
         // Persist conversation history (pruned to last N messages)
@@ -1053,6 +1107,9 @@ Usually workers complete in one round. Choose (A) unless critical data is missin
           }
         }
 
+        // Now that messages are emitted, clear the streaming text
+        this.cb.onStream?.(null, '', '')
+
         const newStatus: AgentStatus = parsed.done ? 'done' : 'waiting'
         coord.updateAgentStatus(agent.id, newStatus)
         this.cb.onStatusUpdate(agent.id, newStatus)
@@ -1064,7 +1121,8 @@ Usually workers complete in one round. Choose (A) unless critical data is missin
 
         return  // success — exit retry loop
       } catch (err) {
-        this.cb.onProgress?.(null)  // clear progress bar on failure
+        this.cb.onStream?.(null, '', '')   // clear streaming text on failure
+        this.cb.onProgress?.(null)
         if ((err instanceof Error && err.name === 'AbortError') || this.aborted || turnSignal?.aborted) {
           // Aborted — user stopped the run or sleep-wake detected.
           // Re-throw so runAgentTurnWithTimeout can handle it.
