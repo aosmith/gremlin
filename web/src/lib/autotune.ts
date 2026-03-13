@@ -184,10 +184,11 @@ export function computeRecommendation(
   // Use nearly all available memory — Ollama only loads one model at a time
   // and OLLAMA_NUM_CTX caps context so KV cache stays small. Reserve just
   // enough for the OS to stay responsive.
-  // Use full GPU/unified memory — Ollama loads one model at a time and
-  // macOS memory compression handles pressure gracefully. Unused memory
-  // is wasted capability.
-  const usableVRAM = hardware.gpuMemoryGB
+  // Reserve ~15% of GPU memory for KV cache (8K context ≈ 0.5-1.5GB)
+  // and OS overhead. Models that exceed this spill layers to CPU, which
+  // is 5-10x slower per offloaded layer — a bad trade vs a smaller model
+  // that fits entirely in GPU.
+  const usableVRAM = Math.floor(hardware.gpuMemoryGB * 0.85)
   const fittingModels = models.filter(m => m.sizeGB <= usableVRAM)
   const warnings: TuneWarning[] = []
 
@@ -450,10 +451,8 @@ export async function computeAIRecommendation(
   if (!isWebGPUAvailable()) return null
   if (models.length === 0 && cloudProviders.length === 0) return null
 
-  // Use full GPU/unified memory — Ollama loads one model at a time and
-  // macOS memory compression handles pressure gracefully. Unused memory
-  // is wasted capability.
-  const usableVRAM = hardware.gpuMemoryGB
+  // Reserve ~15% for KV cache + OS — same budget as scored recommendation
+  const usableVRAM = Math.floor(hardware.gpuMemoryGB * 0.85)
 
   // Gather all agents from all builtin modes
   const modeAgents: { mode: string; modeName: string; agents: { id: string; name: string; role: string; roleClass: AgentRoleClass }[] }[] = []
@@ -511,42 +510,49 @@ export async function computeAIRecommendation(
     modelSection += `\nCLOUD MODELS (API providers, no VRAM constraint):\n${cloudInfo}\n`
   }
 
-  const prompt = `You are an AI model assignment optimizer. Given hardware specs, available models (local + cloud), and agent definitions across multiple modes, assign the BEST and LARGEST model to each agent.
+  const prompt = `You are an AI model assignment optimizer for GREMLIN, a multi-agent coordination system that runs agents through Ollama.
 
 HARDWARE:
 - GPU: ${hardware.gpuName}
-- Total Memory: ${hardware.totalMemoryGB}GB
-- Available VRAM: ${usableVRAM.toFixed(1)}GB
+- Total System Memory: ${hardware.totalMemoryGB}GB
+- Model Weight Budget: ${usableVRAM}GB (85% of GPU memory — the rest is reserved for KV cache + OS)
 - CPU Cores: ${hardware.cpuCores}
 - Platform: ${hardware.platform}/${hardware.arch}
 
-MEMORY PHILOSOPHY: Maximize model quality by using the largest, most capable models available. Ollama loads ONE model at a time — the full ${hardware.totalMemoryGB}GB of unified memory is available for each model load. The OS handles memory pressure via compression and swap. A 20GB model on a ${hardware.totalMemoryGB}GB system is totally fine. Even models that are 90%+ of total memory will run. Unused memory is wasted capability — always pick the biggest model that could possibly fit.
+HOW OLLAMA USES MEMORY:
+- Model weights are loaded into GPU VRAM (the "sizeGB" listed for each model).
+- On top of weights, Ollama allocates a KV cache for the context window. GREMLIN caps context at 8192 tokens, so KV cache adds ~0.5-1.5GB.
+- If weights + KV cache exceed GPU VRAM, Ollama offloads layers to CPU. Each offloaded layer is 5-10x SLOWER.
+- CRITICAL: A model that fits fully in GPU with room for KV cache will be dramatically faster than a larger model with layers spilled to CPU. ALWAYS prefer a model that fits cleanly over a bigger one that spills.
+- Model weight size must be ≤ ${usableVRAM}GB to fit with KV cache headroom.
 
 CONSTRAINTS:
-- Ollama loads ONE model at a time (MAX_LOADED_MODELS=1). Swapping takes 10-30s. Minimize distinct local models per mode to reduce swaps.
+- Ollama loads ONE model at a time. Swapping takes 10-30s. Minimize distinct local models per mode to reduce swap overhead.
 - Cloud models have NO VRAM cost and support unlimited parallel calls.
-- If both local and cloud are available, use cloud for quality-critical roles (reasoning, synthesis) and local for latency-sensitive roles (orchestrator).
+- If both local and cloud are available, prefer cloud for quality-critical roles (reasoning, synthesis) and local for latency-sensitive roles (orchestrator).
 
 AVAILABLE MODELS:
 ${modelSection}
-ROLE CLASSES:
-- orchestrator: Delegates tasks, reads reports, outputs JSON with messages. Needs fast response, good JSON output.
-- code: Writes/edits code. Needs strong code generation.
-- reasoning: Deep analysis, risk assessment, diagnostics. Needs chain-of-thought.
-- research: Web research, document analysis, citations. Needs RAG/citation ability.
-- synthesis: Combines multiple inputs into final report. Needs reasoning + writing.
-- general: Miscellaneous tasks. Needs balanced capabilities.
+ROLE CLASSES & SPEED NEEDS:
+- orchestrator: Delegates tasks, reads reports, outputs JSON with messages. Runs EVERY round — SPEED IS CRITICAL. Prefer fast models (MoE like qwen3 is fast despite large param counts due to low active params).
+- code: Writes/edits code. Needs strong code generation. Moderate speed.
+- reasoning: Deep analysis, risk assessment, diagnostics. Needs chain-of-thought. QUALITY > speed.
+- research: Web research, document analysis, citations. Needs RAG/citation ability. Moderate speed.
+- synthesis: Combines multiple inputs into final report. Runs once at end. QUALITY > speed.
+- general: Miscellaneous tasks. Needs balanced capabilities. Moderate speed.
 
 AGENTS BY MODE:
 ${modeInfo}
 
 RULES:
-1. Always prefer the LARGEST, most capable model that fits for each role
-2. Match model strengths to role classes — pick specialists over generalists
-3. Minimize distinct LOCAL models per mode to reduce swap overhead
-4. Cloud models can be used freely without swap penalty
-5. Every agent MUST get a model assignment — use exact model names from the lists above
-6. Pick ONE global default model (the best all-rounder from any source)
+1. Model weight size MUST be ≤ ${usableVRAM}GB — reject any model that exceeds this, even by 1GB
+2. Among models that fit, prefer the best-matched specialist for each role class
+3. Orchestrators need SPEED — prefer fast architectures (MoE, smaller models) over raw size
+4. For reasoning/synthesis roles, prefer the most capable model that fits within budget
+5. Minimize distinct LOCAL models per mode (ideally 1-2) to reduce swap overhead
+6. Cloud models can be used freely — no VRAM cost, no swap penalty
+7. Every agent MUST get a model assignment — use EXACT model names from the lists above
+8. Pick ONE global default model (the best all-rounder that fits the memory budget)
 
 Respond with ONLY valid JSON, no other text:
 {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte'
   import type { AgentState } from '../lib/types'
 
   interface Props {
@@ -6,10 +7,37 @@
     selected: boolean
     onclick: () => void
     onedit: () => void
+    onstop?: () => void
     onretry?: () => void
   }
-  const { agent, selected, onclick, onedit, onretry }: Props = $props()
+  const { agent, selected, onclick, onedit, onstop, onretry }: Props = $props()
 
+  // Live elapsed-time counter while agent is running
+  let runStartTime = $state(0)
+  let elapsed = $state('')
+  let timer: ReturnType<typeof setInterval> | null = null
+
+  function startTimer() {
+    if (timer) return
+    runStartTime = Date.now()
+    elapsed = '0s'
+    timer = setInterval(() => {
+      const s = Math.floor((Date.now() - runStartTime) / 1000)
+      elapsed = s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
+    }, 1000)
+  }
+
+  function stopTimer() {
+    if (timer) { clearInterval(timer); timer = null }
+    elapsed = ''
+  }
+
+  $effect(() => {
+    if (agent.status === 'running') startTimer()
+    else stopTimer()
+  })
+
+  onDestroy(() => stopTimer())
 </script>
 
 <div
@@ -35,7 +63,17 @@
     </div>
     <div class="meta">
       <span class="role">{agent.role}</span>
-      <span class="status {agent.status}">{agent.status[0].toUpperCase() + agent.status.slice(1)}</span>
+      <span class="status {agent.status}">
+        {agent.status === 'stopping' ? 'Stopping…' : agent.status[0].toUpperCase() + agent.status.slice(1)}
+        {#if agent.status === 'running' && elapsed}<span class="elapsed">{elapsed}</span>{/if}
+      </span>
+      {#if agent.status === 'running' && onstop}
+        <button
+          class="btn-stop"
+          onclick={(e) => { e.stopPropagation(); onstop() }}
+          title="Stop this agent"
+        >Stop</button>
+      {/if}
       {#if agent.status === 'error' && onretry}
         <button
           class="btn-retry"
@@ -139,7 +177,14 @@
   .status.running { color: var(--color-accent-warn); }
   .status.waiting { color: var(--color-accent-2); }
   .status.done    { color: var(--color-accent); }
+  .status.stopping { color: var(--color-accent-warn); }
   .status.error   { color: var(--color-accent-err); }
+  .elapsed {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    opacity: 0.7;
+    margin-left: 4px;
+  }
 
 
   .stats {

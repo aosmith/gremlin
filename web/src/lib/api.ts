@@ -5,6 +5,86 @@ import { toAnthropicTools, executeTool } from './tools'
 import { callWebLLM } from './webllm'
 import type { ProgressCallback } from './webllm'
 
+// ── Ollama context window sizing ─────────────────────────────────────────────
+// Cached hardware + model info, populated once per session via initOllamaProfile().
+
+let _gpuMemoryGB = 0
+let _modelSizeMap = new Map<string, number>()
+
+/**
+ * Fetch hardware profile + installed model sizes from local LLM servers.
+ * Called once by AgentRunner before the main loop so that oaiFetch can
+ * compute an appropriate num_ctx per-request without async overhead.
+ * Works for Ollama (via /api/tags) and any OpenAI-compatible local server.
+ */
+export async function initLocalModelProfile(endpoints: string[]): Promise<void> {
+  // Hardware — try Vite server endpoint, fall back to navigator API
+  if (_gpuMemoryGB === 0) {
+    try {
+      const resp = await fetch('/api/system-info', { signal: AbortSignal.timeout(2_000) })
+      if (resp.ok) {
+        const info = await resp.json()
+        _gpuMemoryGB = info.gpuMemoryGB || info.totalMemoryGB || 0
+      }
+    } catch { /* fallback */ }
+    if (_gpuMemoryGB === 0) {
+      _gpuMemoryGB = (navigator as any).deviceMemory ?? 8
+    }
+  }
+
+  // Collect model sizes from all local endpoints
+  _modelSizeMap = new Map()
+  for (const ep of endpoints) {
+    if (!isLocalEndpoint(ep)) continue
+    const base = ep.replace(/\/v1.*$/, '')
+    // Try Ollama /api/tags first (has size info)
+    try {
+      const resp = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(3_000) })
+      if (resp.ok) {
+        const data = await resp.json()
+        for (const m of (data.models ?? []) as Array<{ name: string; size: number }>) {
+          _modelSizeMap.set(m.name, Math.round(m.size / 1e9 * 10) / 10)
+        }
+        continue
+      }
+    } catch { /* not Ollama — try OpenAI models endpoint */ }
+    // Fallback: OpenAI-compatible /v1/models (no size info — use 0 for conservative default)
+    try {
+      const resp = await fetch(`${base}/v1/models`, { signal: AbortSignal.timeout(3_000) })
+      if (resp.ok) {
+        const data = await resp.json()
+        for (const m of (data.data ?? []) as Array<{ id: string }>) {
+          if (!_modelSizeMap.has(m.id)) _modelSizeMap.set(m.id, 0)
+        }
+      }
+    } catch { /* endpoint not reachable */ }
+  }
+}
+
+/** Check if an endpoint is a local LLM server (Ollama, LM Studio, etc.). */
+function isLocalEndpoint(endpoint: string): boolean {
+  return /localhost|127\.0\.0\.1/.test(endpoint)
+}
+
+/**
+ * Compute optimal num_ctx for a given model based on GPU memory budget.
+ * Goal: leave enough room for KV cache without spilling layers to CPU.
+ */
+function computeNumCtx(modelName: string): number {
+  if (_gpuMemoryGB === 0) return 8192  // no hardware info — safe default
+
+  const modelGB = _modelSizeMap.get(modelName) ?? 0
+  // Available memory for KV cache = 85% of GPU (OS headroom) minus model weights
+  const kvBudgetGB = _gpuMemoryGB * 0.85 - modelGB
+
+  if (kvBudgetGB <= 0) return 2048     // model barely fits — minimal context
+  if (kvBudgetGB < 1) return 4096
+  if (kvBudgetGB < 2) return 8192
+  if (kvBudgetGB < 4) return 16384
+  if (kvBudgetGB < 8) return 32768
+  return 65536
+}
+
 // ── Multimodal content helpers ───────────────────────────────────────────────
 
 /** Convert LLMMessage to OpenAI-format content (string or content blocks). */
@@ -327,12 +407,10 @@ async function callOpenAIWithTools(
   let activeTools: OAITool[] | undefined = tools
   const msgs: OAIMsg[] = [{ role: 'system', content: system }, ...messages.map((m) => ({ role: m.role, content: toOaiContent(m) } as OAIMsg))]
 
-  // Disable streaming for local Ollama — SSE parsing can hang and local latency is minimal
-  const isLocalOllama = settings.apiEndpoint.includes('localhost:11434') || settings.apiEndpoint.includes('127.0.0.1:11434')
   for (let round = 0; round < 4; round++) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     let resp: Response
-    const useStream = !!onStream && !isLocalOllama
+    const useStream = !!onStream
     try {
       resp = await oaiFetch(settings, msgs, activeTools, signal, useStream)
     } catch (err) {
@@ -401,9 +479,13 @@ function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[], si
     messages,
     stream,
   }
-  // Ollama: keep models loaded briefly to avoid cold-starts within a run,
+  // Local LLM servers: cap context window based on available GPU memory to prevent
+  // KV cache from blowing through VRAM and spilling layers to (slow) CPU.
+  if (isLocalEndpoint(settings.apiEndpoint)) {
+    body.options = { num_ctx: computeNumCtx(settings.model) }
+  }
+  // Ollama-specific: keep models loaded briefly to avoid cold-starts within a run,
   // but short enough that memory is freed for the next model swap.
-  // Context window is capped via OLLAMA_NUM_CTX env var (set by npm run dev).
   if (settings.apiEndpoint.includes('localhost:11434') || settings.apiEndpoint.includes('127.0.0.1:11434')) {
     body.keep_alive = '5m'
   }
@@ -631,66 +713,70 @@ async function callGemini(
  * Unloads the global model AND any per-agent model overrides.
  * Returns a log string on failure, or null on success/no-op.
  */
-const OLLAMA_ENDPOINT = PROVIDERS.find((p) => p.id === 'ollama')!.endpoint
-
 export async function unloadOllamaModels(
   settings: Settings,
   agents: Array<{ model?: string }> = [],
 ): Promise<string | null> {
-  // Only act when the user is actually pointing at an Ollama server
-  if (!settings.apiEndpoint.replace(/\/$/, '').startsWith(OLLAMA_ENDPOINT.replace(/\/v1.*$/, ''))) return null
+  // Collect ALL Ollama base URLs from global endpoint + multi-provider list
+  const ollamaPattern = /localhost:11434|127\.0\.0\.1:11434/
+  const bases = new Set<string>()
 
-  const base = settings.apiEndpoint.replace(/\/v1.*$/, '')
+  if (ollamaPattern.test(settings.apiEndpoint)) {
+    bases.add(settings.apiEndpoint.replace(/\/v1.*$/, ''))
+  }
+  for (const p of settings.llmProviders ?? []) {
+    if (ollamaPattern.test(p.endpoint)) {
+      bases.add(p.endpoint.replace(/\/v1.*$/, ''))
+    }
+  }
 
-  // Query what's actually loaded in Ollama and unload those directly
-  // This is more reliable than guessing model names (handles :latest tags, etc.)
-  try {
-    const psResp = await fetch(`${base}/api/ps`)
-    if (psResp.ok) {
-      const psData = await psResp.json()
-      const loaded = (psData.models ?? []) as Array<{ name: string }>
-      if (loaded.length > 0) {
-        const errors: string[] = []
+  if (bases.size === 0) return null
+
+  const errors: string[] = []
+
+  for (const base of bases) {
+    // Query what's actually loaded in Ollama and unload those directly
+    // This is more reliable than guessing model names (handles :latest tags, etc.)
+    try {
+      const psResp = await fetch(`${base}/api/ps`)
+      if (psResp.ok) {
+        const psData = await psResp.json()
+        const loaded = (psData.models ?? []) as Array<{ name: string }>
         await Promise.all(loaded.map(async (m) => {
           try {
             const resp = await fetch(`${base}/api/generate`, {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ model: m.name, keep_alive: 0 }),
-              // No timeout — large models on CPU can be slow
             })
             if (!resp.ok) errors.push(`${m.name}: HTTP ${resp.status}`)
           } catch (err) {
             errors.push(`${m.name}: ${err instanceof Error ? err.message : String(err)}`)
           }
         }))
-        return errors.length > 0 ? `Failed to unload: ${errors.join('; ')}` : null
+        continue  // ps-based unload succeeded — skip name-based fallback for this endpoint
       }
-    }
-  } catch { /* fall through to name-based approach */ }
+    } catch { /* fall through to name-based approach */ }
 
-  // Fallback: unload by configured model names
-  const models = new Set<string>()
-  if (settings.model) models.add(settings.model)
-  for (const a of agents) {
-    if (a.model?.trim()) models.add(a.model.trim())
+    // Fallback: unload by configured model names
+    const models = new Set<string>()
+    if (settings.model) models.add(settings.model)
+    for (const a of agents) {
+      if (a.model?.trim()) models.add(a.model.trim())
+    }
+    await Promise.all([...models].map(async (model) => {
+      try {
+        const resp = await fetch(`${base}/api/generate`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model, keep_alive: 0 }),
+        })
+        if (!resp.ok) errors.push(`${model}: HTTP ${resp.status}`)
+      } catch (err) {
+        errors.push(`${model}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }))
   }
-  if (models.size === 0) return null
-
-  const errors: string[] = []
-  await Promise.all([...models].map(async (model) => {
-    try {
-      const resp = await fetch(`${base}/api/generate`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model, keep_alive: 0 }),
-        // No timeout — large models on CPU can be slow
-      })
-      if (!resp.ok) errors.push(`${model}: HTTP ${resp.status}`)
-    } catch (err) {
-      errors.push(`${model}: ${err instanceof Error ? err.message : String(err)}`)
-    }
-  }))
 
   return errors.length > 0 ? `Failed to unload: ${errors.join('; ')}` : null
 }

@@ -40,6 +40,11 @@ function loadSettings(): Settings  {
   }
   // Migrate: add llmProviders if missing
   if (!Array.isArray(s.llmProviders)) s.llmProviders = []
+  // Migrate: webllmEnabled was default true in earlier versions — force off unless user re-enables
+  if (!localStorage.getItem('gremlin_webllm_migrated')) {
+    s.webllmEnabled = false
+    localStorage.setItem('gremlin_webllm_migrated', '1')
+  }
   return s
 }
 function saveSettings(s: Settings) { lsSet('gremlin_settings', s) }
@@ -750,11 +755,10 @@ class GremlinStore {
     try {
       await this.runner.run(this.task, this.agentConfigs, this.settings, this.attachments, this.makeCallbacks(), tools)
     } catch (err) {
+      // onDone is guaranteed to be called by runner.run()'s finally block,
+      // so just log the error here — cleanup is already handled.
       const msg = err instanceof Error ? err.message : String(err)
       this.addLog(`✖ Fatal: ${msg}`)
-      this.isRunning = false
-      this.finalizeAgentStates()
-      this.releaseModels()
     }
   }
 
@@ -832,12 +836,17 @@ class GremlinStore {
     try {
       await this.runner.run(this.task, this.agentConfigs, this.settings, this.attachments, this.makeCallbacks(), tools)
     } catch (err) {
+      // onDone is guaranteed to be called by runner.run()'s finally block,
+      // so just log the error here — cleanup is already handled.
       const msg = err instanceof Error ? err.message : String(err)
       this.addLog(`✖ Fatal: ${msg}`)
-      this.isRunning = false
-      this.finalizeAgentStates()
-      this.releaseModels()
     }
+  }
+
+  stopAgent(agentId: string) {
+    if (!this.runner) return
+    this.runner.stopAgent(agentId)
+    this.syncAgentStates()
   }
 
   retryAgent(agentId: string) {
@@ -903,6 +912,8 @@ class GremlinStore {
         this.webllmProgress = p
       },
       onDone: () => {
+        // Idempotent — safe to call multiple times (runner.run finally block guarantees at least one call)
+        if (!this.isRunning) return
         this.isRunning      = false
         this.webllmProgress = null
         this.streamingAgentId = null

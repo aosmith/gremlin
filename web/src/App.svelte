@@ -522,6 +522,7 @@
               if (store.selectedAgentId) store.selectedFile = null
             }}
             onedit={() => (store.showAgentEdit = agent.id)}
+            onstop={() => store.stopAgent(agent.id)}
             onretry={() => store.retryAgent(agent.id)}
           />
         {/each}

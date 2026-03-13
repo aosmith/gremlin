@@ -102,16 +102,21 @@
     {/each}
 
     {#if streamingAgentId && streamingText}
+      {@const displayText = streamingText.replace(/<think>[\s\S]*?(<\/think>|$)/gi, '').trim()}
       <div class="event streaming">
         <span class="route">
           <span class="agent-name" style="color: {agentColor(streamingAgentId)}">{agentName(streamingAgentId)}</span>
+          <span class="streaming-badge">streaming</span>
+        </span>
+        {#if displayText}
+          <div class="content prose-sm streaming-content">{displayText}</div>
+        {:else}
           <span class="typing-indicator">
             <span class="typing-dot"></span>
             <span class="typing-dot"></span>
             <span class="typing-dot"></span>
           </span>
-        </span>
-        <span class="typing-label muted">is thinking…</span>
+        {/if}
       </div>
     {/if}
 
@@ -365,6 +370,35 @@
   @keyframes typing-bounce {
     0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
     30% { opacity: 1; transform: translateY(-3px); }
+  }
+
+  .streaming-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-accent);
+    background: rgba(63,185,80,0.1);
+    border: 1px solid rgba(63,185,80,0.25);
+    border-radius: 3px;
+    padding: 1px 5px;
+    margin-left: 6px;
+    animation: pulse-badge 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-badge {
+    0%, 100% { opacity: 0.7; }
+    50% { opacity: 1; }
+  }
+
+  .streaming-content {
+    white-space: pre-wrap;
+    opacity: 0.7;
+    max-height: 300px;
+    overflow-y: auto;
+    mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
   }
 
 </style>

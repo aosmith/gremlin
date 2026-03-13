@@ -378,6 +378,16 @@
         </div>
       {/if}
 
+      <!-- WebLLM -->
+      <div class="section-divider">In-Browser LLM (WebLLM)</div>
+      <label class="toggle-row">
+        <span class="toggle-switch" class:on={draft.webllmEnabled}>
+          <input type="checkbox" bind:checked={draft.webllmEnabled} />
+          <span class="toggle-track"><span class="toggle-knob"></span></span>
+        </span>
+        <span>Enable WebLLM for local orchestrator routing</span>
+      </label>
+
       <!-- Browser Tools -->
       <div class="section-divider">Browser Tools</div>
       <label class="toggle-row">

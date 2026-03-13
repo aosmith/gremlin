@@ -43,7 +43,7 @@
   let modeAssignments = $state<ModeAssignment[]>([])
   let expandedMode = $state<string | null>(null)
 
-  const usableVRAM = $derived(hardware ? hardware.gpuMemoryGB : 0)
+  const usableVRAM = $derived(hardware ? Math.floor(hardware.gpuMemoryGB * 0.85) : 0)
   const activeRec = $derived(aiRecommendation ?? recommendation)
   const totalChanges = $derived(modeAssignments.reduce((sum, m) => sum + m.changeCount, 0))
 

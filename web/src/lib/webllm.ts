@@ -6,7 +6,7 @@
 import type { InitProgressReport, MLCEngineInterface } from '@mlc-ai/web-llm'
 
 export type WebLLMProgress = { text: string; progress: number }
-export type ProgressCallback = (p: WebLLMProgress) => void
+export type ProgressCallback = (p: WebLLMProgress | null) => void
 
 let engine: MLCEngineInterface | null = null
 let loadedModel = ''

@@ -1,5 +1,5 @@
 export type AgentRole = 'orchestrator' | 'worker' | 'synthesizer' | 'custom'
-export type AgentStatus = 'idle' | 'running' | 'waiting' | 'done' | 'error'
+export type AgentStatus = 'idle' | 'running' | 'waiting' | 'done' | 'error' | 'stopping'
 type MessageType = 'task' | 'message' | 'result' | 'system' | 'error' | 'human'
 export type ApiFormat = 'anthropic' | 'openai' | 'gemini' | 'webllm'
 
@@ -259,6 +259,8 @@ export interface Settings {
   cloudflareAccountId: string
   /** Cloudflare Browser Rendering — API token. */
   cloudflareApiToken: string
+  /** Enable in-browser LLM inference via WebLLM (WebGPU). */
+  webllmEnabled: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -275,6 +277,7 @@ export const DEFAULT_SETTINGS: Settings = {
   browserTools: false,
   cloudflareAccountId: '',
   cloudflareApiToken: '',
+  webllmEnabled: false,
 }
 
 // ── Search providers ──────────────────────────────────────────────────────────
@@ -313,7 +316,8 @@ export const AGENT_COLORS = [
 export const LOCAL_ROUTER_MODEL = 'Qwen2.5-3B-Instruct-q4f16_1-MLC'
 
 /** Appended to every agent prompt so they know to use all available tools. */
-const webHint = ' You have full internet access via web_search() and web_fetch() tools. You MUST use these tools to search the internet before stating any fact, figure, price, statistic, or claim. Your training data is outdated and unreliable — treat it as a rough heuristic only. Every factual statement in your output must be backed by a live web search performed THIS session. Search first, analyze second. If you cannot search, explicitly state that the data is unverified.'
+const webHint = ' You have full internet access via web_search() and web_fetch() tools.'
+  + ' CITATION RULE: Every fact, price, date, statistic, or claim in your output MUST include a [source] tag with the URL or search query it came from. Example: "BTC is at $94,200 [source: web_search btc price]". Any statement without a [source] tag is INVALID and must be removed from your output. You are not allowed to state facts from memory — if you did not search for it this session, you do not know it.'
   + ' Be direct and scannable.'
   + ' You are an expert analyst on an internal team — speak with authority. Never add disclaimers, caveats about consulting professionals, "not financial advice" warnings, or hedging like "this may not fit everyone." The user is a sophisticated professional who does not need to be reminded of obvious risks.'
   + ' Prefer structured output: tables, bullet points, numbered lists, scorecards. Every sentence should contain a fact, number, or actionable insight.'
@@ -802,7 +806,7 @@ function financeAgents(): AgentConfig[] {
 }
 
 function polymarketAgents(): AgentConfig[] {
-  const predContext = ' CONTEXT: You work with prediction markets — platforms where you buy YES or NO shares on real-world event outcomes. Key platforms: Polymarket (polymarket.com, crypto/USDC, largest liquidity), Kalshi (kalshi.com, US-regulated, USD), Metaculus (metaculus.com, calibration-focused forecasting), PredictIt (predictit.org, political markets). Shares are priced $0.00–$1.00 (price = implied probability). If the event happens, YES pays $1; if not, NO pays $1. This is NOT the stock market — there are no stocks, tickers, equities, or companies. Every "market" is a question like "Will X happen by Y date?" Search these platforms for current markets and prices. Compare prices ACROSS platforms for the same events.'
+  const predContext = ' CONTEXT: You work with prediction markets — platforms where you buy YES or NO shares on real-world event outcomes. Key platforms: Polymarket (polymarket.com, crypto/USDC, largest liquidity), Kalshi (kalshi.com, US-regulated, USD), Metaculus (metaculus.com, calibration-focused forecasting), Manifold (manifold.markets, play-money / mana, community-created markets). Shares are priced $0.00–$1.00 (price = implied probability). If the event happens, YES pays $1; if not, NO pays $1. This is NOT the stock market — there are no stocks, tickers, equities, or companies. Every "market" is a question like "Will X happen by Y date?" Search these platforms for current markets and prices. Compare prices ACROSS platforms for the same events.'
   return [
     {
       id: 'market_strategist',
@@ -824,7 +828,7 @@ function polymarketAgents(): AgentConfig[] {
         + 'Each message should tell the specialist to conduct a broad, independent scan of prediction market platforms. '
         + 'Do NOT just forward the user\'s question — reframe it as a research mandate.\n\n'
         + 'Example: if the user asks "what looks good on Polymarket?" you tell each specialist:\n'
-        + '• Probability Modeler: "Scan Polymarket, Kalshi, Metaculus, and PredictIt for the most mispriced contracts right now. Search every category — politics, crypto, sports, economics, culture, science. Find at least 10 contracts with >5% edge."\n'
+        + '• Probability Modeler: "Scan Polymarket, Kalshi, Metaculus, and Manifold for the most mispriced contracts right now. Search every category — politics, crypto, sports, economics, culture, science. Find at least 10 contracts with >5% edge."\n'
         + '• News Scanner: "Search for breaking news, upcoming catalysts, and developing stories that affect prediction market contracts. Cover politics, economics, crypto, sports, geopolitics. Find contracts where news hasn\'t been priced in yet."\n'
         + '• Whale Tracker: "Search Polymarket leaderboards, whale wallets, and top trader activity. Find contracts where smart money is taking large positions. Check multiple platforms."\n'
         + '• Arbitrage Analyst: "Search all major prediction platforms for the same events priced differently. Find cross-platform arbitrage, multi-outcome mispricing, and conditional probability errors."\n\n'
@@ -838,7 +842,7 @@ function polymarketAgents(): AgentConfig[] {
       color: AGENT_COLORS[1],
       model: 'deepseek-r1:32b',
       systemPrompt:
-        'Search polymarket.com, kalshi.com, metaculus.com, and predictit.org for current markets and prices before analyzing. You are the Probability Modeler. Your specialty is estimating true probabilities and finding mispriced contracts across prediction markets. '
+        'Search polymarket.com, kalshi.com, metaculus.com, and manifold.markets for current markets and prices before analyzing. You are the Probability Modeler. Your specialty is estimating true probabilities and finding mispriced contracts across prediction markets. '
         + 'When assigned a research task, use web_search to find current markets and their YES/NO share prices on multiple platforms, then independently analyze as many as you can (aim for 10+).\n\n'
         + 'For each market report:\n'
         + '• Platform and market question (exact title)\n'
@@ -899,9 +903,9 @@ function polymarketAgents(): AgentConfig[] {
       color: AGENT_COLORS[5],
       model: 'deepseek-r1:32b',
       systemPrompt:
-        'Search polymarket.com, kalshi.com, metaculus.com, predictit.org, and sportsbooks for current contract prices before analyzing. You are the Arbitrage Analyst. Your specialty is finding logical inconsistencies and structural mispricings ACROSS prediction platforms.\n\n'
+        'Search polymarket.com, kalshi.com, metaculus.com, manifold.markets, and sportsbooks for current contract prices before analyzing. You are the Arbitrage Analyst. Your specialty is finding logical inconsistencies and structural mispricings ACROSS prediction platforms.\n\n'
         + 'Search for:\n'
-        + '• Cross-platform arbitrage: same event priced differently on Polymarket vs Kalshi vs PredictIt vs Metaculus vs sportsbooks (THIS IS YOUR PRIMARY FOCUS)\n'
+        + '• Cross-platform arbitrage: same event priced differently on Polymarket vs Kalshi vs Manifold vs Metaculus vs sportsbooks (THIS IS YOUR PRIMARY FOCUS)\n'
         + '• Cross-contract contradictions: related markets with inconsistent implied probabilities on the same platform\n'
         + '• Multi-outcome markets where YES shares across all options sum to significantly more or less than $1.00\n'
         + '• Conditional probability errors: P(A and B) contract priced higher than P(A) or P(B) contracts\n'
@@ -926,7 +930,7 @@ function polymarketAgents(): AgentConfig[] {
         + '• Platform, market name, current YES/NO price\n'
         + '• Resolution risk: could the contract resolve ambiguously or be voided? How clear are the resolution criteria?\n'
         + '• Liquidity risk: order book depth, bid-ask spread, can you exit before resolution?\n'
-        + '• Platform risk: regulatory exposure (Kalshi=CFTC-regulated, Polymarket=offshore, PredictIt=CFTC no-action letter expired), withdrawal reliability, market voiding history\n'
+        + '• Platform risk: regulatory exposure (Kalshi=CFTC-regulated, Polymarket=offshore, Manifold=play-money/unregulated), withdrawal reliability, market voiding history\n'
         + '• Correlation risk: does this contract correlate with other proposed positions?\n'
         + '• Capital lockup: how long until resolution? Opportunity cost?\n'
         + '• Counterparty risk: platform solvency, smart contract risk (Polymarket), custody risk\n'
@@ -955,7 +959,7 @@ function polymarketAgents(): AgentConfig[] {
         + '  "summary": "3-5 paragraph executive summary: prediction market conditions across platforms, overall strategy, key convictions, biggest risks, and recommended approach.",\n'
         + '  "trades": [\n'
         + '    {\n'
-        + '      "platform": "Polymarket | Kalshi | PredictIt | Metaculus",\n'
+        + '      "platform": "Polymarket | Kalshi | Manifold | Metaculus",\n'
         + '      "market": "Exact market question from the platform",\n'
         + '      "category": "Politics | Crypto | Sports | Economics | Culture | Science",\n'
         + '      "currentPrice": 0.42,\n'

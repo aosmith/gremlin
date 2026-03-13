@@ -10,7 +10,7 @@
  * In engineering mode (tools provided) agents can call write_file / read_file / list_directory.
  */
 
-import { callLLMWithTools, ensureOllamaModels } from './api'
+import { callLLMWithTools, ensureOllamaModels, initLocalModelProfile } from './api'
 import type { ToolCallEvent, StreamCallback } from './api'
 import type { OAITool, ToolExecutor, ToolCallRecord } from './tools'
 import { PROTOCOL_TOOLS, PROTOCOL_TOOL_NAMES, executeTool } from './tools'
@@ -55,8 +55,6 @@ const RETRY_BASE_MS = 2_000
 /** Max agents hitting the LLM simultaneously (prevents overwhelming providers). */
 const MAX_CONCURRENT = 3
 
-/** Per-agent turn timeout (ms). Prevents a single stuck LLM call from hanging the session. */
-const AGENT_TURN_TIMEOUT_MS = 5 * 60 * 1000  // 5 minutes
 
 export class AgentRunner {
   private configs = new Map<string, AgentConfig>()
@@ -85,11 +83,44 @@ export class AgentRunner {
   private agentTurns = new Map<string, number>()
   /** Round-robin counter for multi-provider dispatch. */
   private providerIndex = 0
+  /** Agents that the user has manually stopped — prevents status overwrite on abort. */
+  private stoppedAgents = new Set<string>()
+  /** Sleep-wake detector: abort controllers for in-flight agent turns, keyed by agent ID. */
+  private activeTurnAborts = new Map<string, AbortController>()
+  /** Sleep-wake heartbeat interval ID. */
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  /** Timestamp of last heartbeat tick. */
+  private lastHeartbeat = 0
 
   abort() {
     this.aborted = true
     this.abortController.abort()
     this.histories.clear()
+    this.stopHeartbeat()
+  }
+
+  /**
+   * Start a heartbeat that detects system sleep/wake.
+   * When the system sleeps, setInterval pauses. On wake, the next tick sees a large
+   * wall-clock gap. If the gap is large, all in-flight turns are stale
+   * and their fetch connections are dead — abort them so the loop can recover.
+   */
+  private startHeartbeat(): void {
+    this.lastHeartbeat = Date.now()
+    this.heartbeatTimer = setInterval(() => {
+      const now = Date.now()
+      const gap = now - this.lastHeartbeat
+      this.lastHeartbeat = now
+      // If the gap is much larger than the interval (10s), the system was asleep
+      if (gap > 30_000 && this.activeTurnAborts.size > 0) {
+        this.cb?.onLog(`⚠ System wake detected (${Math.round(gap / 1000)}s gap) — aborting ${this.activeTurnAborts.size} stale agent turn(s)`)
+        for (const [, ac] of this.activeTurnAborts) ac.abort()
+      }
+    }, 10_000)
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null }
   }
 
   /** Get per-agent performance metrics. */
@@ -109,6 +140,17 @@ export class AgentRunner {
     this.processedCounts.set(agent.id, 0)
     this.sentContent.set(agent.id, [])
     coord.addAgent(agent)
+  }
+
+  /** Collect all unique local (localhost/127.0.0.1) endpoints from settings + providers. */
+  private collectLocalEndpoints(): string[] {
+    const eps = new Set<string>()
+    const isLocal = (ep: string) => /localhost|127\.0\.0\.1/.test(ep)
+    if (isLocal(this.settings.apiEndpoint)) eps.add(this.settings.apiEndpoint)
+    for (const p of this.settings.llmProviders ?? []) {
+      if (isLocal(p.endpoint)) eps.add(p.endpoint)
+    }
+    return [...eps]
   }
 
   /**
@@ -191,6 +233,22 @@ export class AgentRunner {
     for (const [endpoint, models] of modelsByEndpoint) {
       const needed = [...models]
       this.cb.onLog(`Checking ${needed.length} model${needed.length > 1 ? 's' : ''} in Ollama…`)
+
+      // Health-check: can we reach Ollama at all?
+      try {
+        await fetch(endpoint.replace(/\/v1\/.*$/, '/api/tags'), { signal: AbortSignal.timeout(3_000) })
+      } catch {
+        // Ollama is unreachable — check if any non-Ollama providers can serve as fallback
+        const hasCloudFallback = (this.settings.llmProviders ?? []).some(
+          (p) => !p.endpoint.includes('localhost:11434') && !p.endpoint.includes('127.0.0.1:11434'),
+        )
+        if (hasCloudFallback) {
+          this.cb.onLog(`⚠ Ollama is not running at ${endpoint} — falling back to cloud providers`)
+          continue
+        }
+        throw new Error(`Ollama is not running at ${endpoint}. Start it with: ollama serve`)
+      }
+
       const pulled = await ensureOllamaModels(
         endpoint,
         needed,
@@ -270,13 +328,24 @@ export class AgentRunner {
 
     callbacks.onLog(`Session started${tools.length ? ' (dev mode — file tools enabled)' : ''}`)
 
-    // Pre-flight: pull any missing Ollama models before starting the agent loop
+    // Pre-flight: detect hardware + model sizes so API calls can size num_ctx,
+    // then pull any missing Ollama models before starting the agent loop.
+    const localEndpoints = this.collectLocalEndpoints()
+    if (localEndpoints.length > 0) {
+      await initLocalModelProfile(localEndpoints)
+    }
     await this.ensureMissingModels()
 
-    await this.runLoop()
+    // Start sleep-wake detector so stale fetches are aborted after system resume
+    this.startHeartbeat()
 
-    coord.setRunning(false)
-    callbacks.onDone()
+    try {
+      await this.runLoop()
+    } finally {
+      this.stopHeartbeat()
+      coord.setRunning(false)
+      try { callbacks.onDone() } catch { /* safety — never let onDone failure mask the original error */ }
+    }
   }
 
   // ── Core loop — shared between initial run and human-message resumption ──────
@@ -301,6 +370,13 @@ export class AgentRunner {
           // force all waiting workers to "done" and trigger synthesis.
           const synthesizer = agents.find((a) => a.role === 'synthesizer')
           const synthStatus = synthesizer ? coord.getAgentStatus(synthesizer.id) : null
+
+          // If the synthesizer already errored, don't keep retrying — the provider is likely down
+          if (synthesizer && synthStatus === 'error') {
+            this.cb.onLog('Synthesizer failed — session complete with errors')
+            break
+          }
+
           if (synthesizer && synthStatus !== 'done') {
             const workers = agents.filter((a) => a.role === 'worker' || a.role === 'custom')
             const waitingWorkers = workers.filter((w) => coord.getAgentStatus(w.id) !== 'done' && coord.getAgentStatus(w.id) !== 'error')
@@ -333,8 +409,11 @@ export class AgentRunner {
         // This prevents Ollama from thrashing models in/out of VRAM when
         // different agents use different models.
         const modelBatches = this.groupByModel(pending)
-        for (const batch of modelBatches) {
+        for (let bi = 0; bi < modelBatches.length; bi++) {
           if (this.aborted) break
+          const batch = modelBatches[bi]
+          const modelName = batch[0]?.model?.trim() || this.settings.model || '(default)'
+          this.cb.onLog(`Batch ${bi + 1}/${modelBatches.length} [${modelName}]: ${batch.map((a) => a.name).join(', ')}`)
           await this.runWithConcurrency(batch, MAX_CONCURRENT, (a) => this.runAgentTurnWithTimeout(a, this.round))
         }
 
@@ -362,6 +441,21 @@ export class AgentRunner {
           })
           const synthStatus = coord.getAgentStatus(synthesizer.id)
 
+          // Log worker state for diagnostics
+          if (!allWorkersDone) {
+            const blocking = workers
+              .filter((w) => {
+                const dispatched = coord.getMessageCountFor(w.id) > 0
+                if (!dispatched) return false
+                const s = coord.getAgentStatus(w.id)
+                return s !== 'done' && s !== 'error'
+              })
+              .map((w) => `${w.name}(${coord.getAgentStatus(w.id)})`)
+            if (blocking.length > 0) {
+              this.cb.onLog(`Waiting on: ${blocking.join(', ')}`)
+            }
+          }
+
           // Peer-message wake-up: if all workers report "done" but some have
           // unprocessed messages (from peers who sent messages in the same round),
           // reset those workers to "waiting" so they process peer messages first.
@@ -382,6 +476,7 @@ export class AgentRunner {
           }
 
           if (allWorkersDone && synthStatus !== 'done') {
+            this.cb.onLog(`All workers done — triggering synthesis`)
             const workerSummaries = workers.map((w) => {
               // Skip if synthesizer already received messages from this worker
               const msgs = coord.getMessagesFor(synthesizer.id).filter((m) => m.fromAgent === w.id)
@@ -482,7 +577,9 @@ export class AgentRunner {
             }
 
             this.cb.onLog(`Adding ${continuation.extraRounds} rounds (new limit: ${this.settings.maxRounds})`)
-            await this.runLoop() // resume the loop with new budget
+            // Reset flag before recursive call — the old runLoop invocation is done
+            this.loopRunning = false
+            await this.runLoop()
           } else if (!this.aborted) {
             // User chose to synthesize now (or no callback)
             this.cb.onLog(`⚠ Round limit (${this.settings.maxRounds}) reached — forcing synthesis with available work`)
@@ -518,8 +615,31 @@ export class AgentRunner {
       this.runLoop().then(() => {
         coord.setRunning(false)
         this.cb?.onDone()
+      }).catch((err) => {
+        coord.setRunning(false)
+        this.cb?.onLog(`✖ Fatal: ${err instanceof Error ? err.message : String(err)}`)
+        try { this.cb?.onDone() } catch { /* safety */ }
       })
     }
+  }
+
+  // ── Stop: abort a single running agent ──────────────────────────────────────
+  stopAgent(agentId: string): void {
+    const agent = this.configs.get(agentId)
+    if (!agent) return
+    this.stoppedAgents.add(agentId)
+    coord.updateAgentStatus(agentId, 'stopping')
+    this.cb.onStatusUpdate(agentId, 'stopping')
+    const turnAbort = this.activeTurnAborts.get(agentId)
+    if (turnAbort) {
+      turnAbort.abort()
+    } else {
+      // No in-flight turn — go straight to done
+      coord.updateAgentStatus(agentId, 'done')
+      this.cb.onStatusUpdate(agentId, 'done')
+    }
+    this.cb.onLog(`Stopping ${agent.name}…`)
+    this.emit({ fromAgent: agentId, toAgent: 'system', content: 'Stopped by user', type: 'system', timestamp: Date.now(), round: this.round })
   }
 
   // ── Retry: re-run a failed agent's last turn ──────────────────────────────────
@@ -542,7 +662,7 @@ export class AgentRunner {
       // Give it headroom by resetting the round counter
       this.round = Math.max(0, this.round - 2)
       if (!this.aborted) {
-        this.runLoop().then(() => {
+        return this.runLoop().then(() => {
           coord.setRunning(false)
           this.cb?.onDone()
         })
@@ -550,6 +670,10 @@ export class AgentRunner {
         coord.setRunning(false)
         this.cb?.onDone()
       }
+    }).catch((err) => {
+      coord.setRunning(false)
+      this.cb?.onLog(`✖ Fatal: ${err instanceof Error ? err.message : String(err)}`)
+      try { this.cb?.onDone() } catch { /* safety */ }
     })
   }
 
@@ -563,7 +687,11 @@ export class AgentRunner {
     while ((queue.length > 0 || running.length > 0) && !this.aborted) {
       while (running.length < limit && queue.length > 0 && !this.aborted) {
         const item = queue.shift()!
-        const p = fn(item).then(() => { running.splice(running.indexOf(p), 1) })
+        // Always remove from running on settle (resolve OR reject) to prevent leaked promises
+        const p = fn(item).then(
+          () => { running.splice(running.indexOf(p), 1) },
+          () => { running.splice(running.indexOf(p), 1) },
+        )
         running.push(p)
       }
       if (running.length > 0) await Promise.race(running)
@@ -637,6 +765,7 @@ export class AgentRunner {
         1024,
         this.cb.onProgress,
       )
+      this.cb.onProgress?.(null)  // clear progress bar
       const elapsed = performance.now() - t0
       this.agentLatency.set(agent.id, (this.agentLatency.get(agent.id) ?? 0) + elapsed)
       this.agentTurns.set(agent.id, (this.agentTurns.get(agent.id) ?? 0) + 1)
@@ -681,6 +810,7 @@ export class AgentRunner {
       return true
     } catch (err) {
       // WebLLM failed — fall back to normal LLM
+      this.cb.onProgress?.(null)  // clear progress bar
       this.cb.onLog(`⚠ ${agent.name}: local model failed (${err instanceof Error ? err.message : err}), falling back to provider`)
       return false
     }
@@ -736,23 +866,36 @@ B) A specific agent needs follow-up (missing data, clarification needed):
 Usually workers complete in one round. Choose (A) unless critical data is missing.`
   }
 
-  /** Wraps runAgentTurn with a timeout to prevent hung sessions. */
+  /** Wraps runAgentTurn with an abort controller for user stop and sleep-wake detection. */
   private async runAgentTurnWithTimeout(agent: AgentConfig, round: number): Promise<void> {
-    const timeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Agent turn timed out after ${AGENT_TURN_TIMEOUT_MS / 1000}s`)), AGENT_TURN_TIMEOUT_MS),
-    )
+    const turnAbort = new AbortController()
+    const onSessionAbort = () => turnAbort.abort()
+    this.abortController.signal.addEventListener('abort', onSessionAbort, { once: true })
+    this.activeTurnAborts.set(agent.id, turnAbort)
+
     try {
-      await Promise.race([this.runAgentTurn(agent, round), timeout])
+      await this.runAgentTurn(agent, round, turnAbort.signal)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      this.cb.onLog(`⚠ ${agent.name}: ${msg}`)
-      coord.updateAgentStatus(agent.id, 'error')
-      this.cb.onStatusUpdate(agent.id, 'error')
-      this.emit({ fromAgent: agent.id, toAgent: 'system', content: `Error: ${msg}`, type: 'system', timestamp: Date.now(), round })
+      if (msg.includes('AbortError') || msg.includes('aborted')) {
+        // If user stopped this agent, transition stopping → done
+        if (this.stoppedAgents.has(agent.id)) {
+          coord.updateAgentStatus(agent.id, 'done')
+          this.cb.onStatusUpdate(agent.id, 'done')
+        }
+      } else {
+        this.cb.onLog(`⚠ ${agent.name}: ${msg}`)
+        coord.updateAgentStatus(agent.id, 'error')
+        this.cb.onStatusUpdate(agent.id, 'error')
+        this.emit({ fromAgent: agent.id, toAgent: 'system', content: `Error: ${msg}`, type: 'system', timestamp: Date.now(), round })
+      }
+    } finally {
+      this.activeTurnAborts.delete(agent.id)
+      this.abortController.signal.removeEventListener('abort', onSessionAbort)
     }
   }
 
-  private async runAgentTurn(agent: AgentConfig, round: number): Promise<void> {
+  private async runAgentTurn(agent: AgentConfig, round: number, turnSignal?: AbortSignal): Promise<void> {
     const allMsgs = coord.getMessagesFor(agent.id)
     const processed = this.processedCounts.get(agent.id) ?? 0
     const newMsgs = allMsgs.slice(processed)
@@ -773,7 +916,7 @@ Usually workers complete in one round. Choose (A) unless critical data is missin
       .join('\n\n---\n\n')
 
     // ── Local router fast-path: run orchestrators in-browser via WebGPU ──
-    if (agent.localModel && await this.tryLocalRouter(agent, userContent, round)) {
+    if (this.settings.webllmEnabled && agent.localModel && await this.tryLocalRouter(agent, userContent, round)) {
       return
     }
 
@@ -784,9 +927,11 @@ Usually workers complete in one round. Choose (A) unless critical data is missin
     let agentSettings = this.resolveProviderSettings(agent)
     if (agent.searchProvider?.trim()) agentSettings = { ...agentSettings, searchProviders: [agent.searchProvider.trim()] }
 
+    // Use per-turn signal when available (enables user-stop abort), fall back to session signal
+    const signal = turnSignal ?? this.abortController.signal
+
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
-        const signal = this.abortController.signal
         const collected: CollectedState = { messages: [], done: false, result: null, hadProtocolCalls: false }
         const executor = this.createExecutor(collected, agentSettings)
 
@@ -827,8 +972,9 @@ Usually workers complete in one round. Choose (A) unless critical data is missin
         this.agentLatency.set(agent.id, (this.agentLatency.get(agent.id) ?? 0) + elapsed)
         this.agentTurns.set(agent.id, (this.agentTurns.get(agent.id) ?? 0) + 1)
 
-        // Clear streaming state now that the LLM call is complete
+        // Clear streaming / progress state now that the LLM call is complete
         this.cb.onStream?.(null, '', '')
+        this.cb.onProgress?.(null)
 
         // Persist conversation history (pruned to last N messages)
         const updated: LLMMessage[] = [...history, userMsg, { role: 'assistant', content: response }]
@@ -918,30 +1064,31 @@ Usually workers complete in one round. Choose (A) unless critical data is missin
 
         return  // success — exit retry loop
       } catch (err) {
-        if ((err instanceof Error && err.name === 'AbortError') || this.aborted) {
-          // User stopped the run — make sure agent isn't stuck on 'running'
-          if (coord.getAgentStatus(agent.id) === 'running') {
-            coord.updateAgentStatus(agent.id, 'waiting')
-            this.cb.onStatusUpdate(agent.id, 'waiting')
-          }
-          return
+        this.cb.onProgress?.(null)  // clear progress bar on failure
+        if ((err instanceof Error && err.name === 'AbortError') || this.aborted || turnSignal?.aborted) {
+          // Aborted — user stopped the run or sleep-wake detected.
+          // Re-throw so runAgentTurnWithTimeout can handle it.
+          throw err
         }
 
         const msg = err instanceof Error ? err.message : String(err)
 
-        // Don't retry errors that will just repeat (CORS is structural; "Failed to fetch" is often transient — rate limiting, connection pool)
-        const noRetry = msg.includes('loop exceeded') || msg.includes('CORS')
+        // Don't retry structural errors — connection refused to localhost means the server is down, not a transient blip
+        const isLocalhost = agentSettings.apiEndpoint.includes('localhost') || agentSettings.apiEndpoint.includes('127.0.0.1')
+        const isConnectionRefused = msg.includes('Failed to fetch') || msg.includes('ECONNREFUSED') || msg.includes('NetworkError')
+        const noRetry = msg.includes('loop exceeded') || msg.includes('CORS') || msg.includes('not running') || (isLocalhost && isConnectionRefused)
         if (attempt < MAX_RETRIES && !noRetry) {
           const delay = RETRY_BASE_MS * Math.pow(2, attempt)
           this.cb.onLog(`⚠ ${agent.name} failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}): ${msg} — retrying in ${(delay / 1000).toFixed(0)}s`)
           this.cb.onStatusUpdate(agent.id, 'waiting')
           await new Promise<void>((resolve) => {
             const timer = setTimeout(resolve, delay)
-            // If aborted while waiting, resolve immediately
+            // If aborted while waiting (user stop), resolve immediately
             const onAbort = () => { clearTimeout(timer); resolve() }
-            this.abortController.signal.addEventListener('abort', onAbort, { once: true })
+            const sig = turnSignal ?? this.abortController.signal
+            sig.addEventListener('abort', onAbort, { once: true })
           })
-          if (this.aborted) return
+          if (this.aborted || turnSignal?.aborted) throw new DOMException('Aborted', 'AbortError')
         } else {
           coord.updateAgentStatus(agent.id, 'error')
           this.cb.onStatusUpdate(agent.id, 'error')
@@ -989,12 +1136,17 @@ If web_search returns no results, say so — do not fill gaps with training data
 
     const now = new Date()
     const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+    const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+    const year = now.getFullYear()
+    const month = now.toLocaleDateString('en-US', { month: 'long' })
 
     return `${agent.systemPrompt}
 ${devToolSection}${searchToolSection}
 ---
-TODAY'S DATE: ${dateStr}
-All analysis must be FORWARD-LOOKING. NEVER state facts, figures, or data from memory — only use data you found via web search this session. If web search fails or returns no results, explicitly say the data is unavailable. Do NOT fill gaps with training data.
+CURRENT DATE & TIME: ${dateStr}, ${timeStr}
+YOUR KNOWLEDGE CUTOFF: Your training data ends in 2024 or earlier. It is now ${year}. You know NOTHING about what has happened since your training cutoff. Any "fact" you recall from memory is potentially wrong — events have occurred, markets have resolved, prices have changed, elections have happened.
+MANDATORY SEARCH: You MUST call web_search() BEFORE stating ANY fact. Append "${month} ${year}" to every query. If search returns no results, say "data unavailable" — do NOT fill in from memory.
+CITATION REQUIRED: Tag every factual claim with [source: ...]. Any claim without a source tag is invalid output.
 
 You are operating inside GREMLIN, a multi-agent coordination system.
 Your agent ID : ${agent.id}
