@@ -3,7 +3,7 @@ import type { AgentConfig, AgentState, AppMode, Attachment, CustomMode, Message,
 import { DEFAULT_SETTINGS } from './types'
 import { AgentRunner } from './agentRunner'
 import type { RunnerCallbacks } from './agentRunner'
-import { unloadOllamaModels } from './api'
+import { unloadOllamaModels, callLLM } from './api'
 import { projectFS } from './filesystem'
 import { DEV_TOOLS, SEARCH_TOOLS, BROWSER_TOOLS } from './tools'
 import { isWebGPUAvailable } from './webllm'
@@ -59,7 +59,7 @@ function saveMode(m: AppMode) { lsSet('gremlin_mode', m) }
 // ── Builtin preset versioning ────────────────────────────────────────────────
 // Bump this whenever builtin mode agents are updated. On load, new agents that
 // don't exist in the user's saved config are merged in — but user edits are preserved.
-const BUILTIN_AGENTS_VERSION = 13
+const BUILTIN_AGENTS_VERSION = 14
 const VERSION_KEY = 'gremlin_builtin_agents_version'
 
 function migrateBuiltinAgents() {
@@ -267,6 +267,18 @@ class GremlinStore {
     resolve: (result: { extraRounds: number; instruction: string } | null) => void
   } | null>(null)
 
+  /** AI-generated agent descriptions for the print report. */
+  agentDescriptions = $state<Record<string, string>>({})
+  /** True while generating descriptions for print. */
+  preparingPrint = $state<boolean>(false)
+  /** AI-polished report markdown (generated in background after run completes). */
+  reportMarkdown = $state<string>('')
+  /** True while the background report-writer agent is running. */
+  generatingReport = $state<boolean>(false)
+
+  /** Non-blocking warning when approaching round limit. */
+  roundsWarning = $state<{ currentRound: number; maxRounds: number } | null>(null)
+
   runner: AgentRunner | null = null
   private saveTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -325,6 +337,13 @@ class GremlinStore {
 
   get currentModeInfo(): ModeInfo {
     return this.allModes.find((m) => m.id === this.appMode) ?? BUILTIN_MODES[0]
+  }
+
+  /** Settings with runMode overrides applied (caps maxRounds in fast mode). */
+  get effectiveSettings(): Settings {
+    const s = this.settings
+    if (s.runMode === 'fast') return { ...s, maxRounds: Math.min(s.maxRounds, 8) }
+    return s
   }
 
   switchMode(mode: AppMode) {
@@ -446,6 +465,17 @@ class GremlinStore {
     if (!this.pendingRoundsExhausted) return
     this.pendingRoundsExhausted.resolve(null)
     this.pendingRoundsExhausted = null
+  }
+
+  /** User clicked Double on the rounds warning banner. */
+  doubleRoundLimit() {
+    this.runner?.doubleRoundLimit()
+    this.roundsWarning = null
+  }
+
+  /** User dismissed the rounds warning. */
+  dismissRoundsWarning() {
+    this.roundsWarning = null
   }
 
   // ── Filesystem ────────────────────────────────────────────────────────────
@@ -680,6 +710,8 @@ class GremlinStore {
     this.messages    = []
     this.logs        = []
     this.output      = ''
+    this.reportMarkdown = ''
+    this.generatingReport = false
     this.currentRound = 0
     this.restoredSessionId = null
     this._archived   = false
@@ -758,7 +790,7 @@ class GremlinStore {
     ]
 
     try {
-      await this.runner.run(this.task, this.agentConfigs, this.settings, this.attachments, this.makeCallbacks(), tools)
+      await this.runner.run(this.task, this.agentConfigs, this.effectiveSettings, this.attachments, this.makeCallbacks(), tools)
     } catch (err) {
       // onDone is guaranteed to be called by runner.run()'s finally block,
       // so just log the error here — cleanup is already handled.
@@ -771,8 +803,6 @@ class GremlinStore {
     this.runner?.abort()
     this.runner = null
     this.isRunning = false
-    this.streamingAgentId = null
-    this.streamingText = ''
     coord.setRunning(false)
     // Sync from coordinator then force remaining active agents to idle
     this.syncAgentStates()
@@ -790,6 +820,93 @@ class GremlinStore {
   private async releaseModels() {
     const err = await unloadOllamaModels(this.settings, this.agentConfigs)
     if (err) this.addLog(`⚠ ${err}`)
+  }
+
+  /** Generate AI descriptions for each agent, then trigger browser print. */
+  async preparePrint() {
+    this.preparingPrint = true
+    try {
+      // Generate agent descriptions if not cached
+      const agentIds = this.agentConfigs.map(a => a.id).sort().join(',')
+      const cacheKey = `gremlin_agent_descs_${agentIds}`
+      const cached = ls<Record<string, string>>(cacheKey, {})
+      if (Object.keys(cached).length === this.agentConfigs.length) {
+        this.agentDescriptions = cached
+      } else {
+        const agentList = this.agentConfigs
+          .map(a => `- ${a.id}: "${a.name}" (${a.role})\n  System prompt: ${a.systemPrompt.slice(0, 500)}`)
+          .join('\n\n')
+
+        const response = await callLLM(
+          'You summarize AI agent roles for a printed report.',
+          [{
+            role: 'user',
+            content: `Write a one-sentence description (under 30 words) of each agent's purpose and specialty based on their system prompt. Return ONLY a JSON object mapping agent ID to description string, no markdown fences.\n\nAgents:\n${agentList}`,
+          }],
+          this.settings,
+        )
+
+        const start = response.indexOf('{')
+        const end = response.lastIndexOf('}')
+        if (start !== -1 && end > start) {
+          const descs = JSON.parse(response.slice(start, end + 1)) as Record<string, string>
+          this.agentDescriptions = descs
+          lsSet(cacheKey, descs)
+        }
+      }
+
+      // Wait for report generation if it's still running
+      if (this.generatingReport) {
+        await new Promise<void>((resolve) => {
+          const check = setInterval(() => {
+            if (!this.generatingReport) { clearInterval(check); resolve() }
+          }, 200)
+        })
+      }
+      // If no report was generated yet (e.g. restored session), generate now
+      if (!this.reportMarkdown && this.output) {
+        await this.generateReport()
+      }
+    } catch (err) {
+      console.warn('Failed to prepare print:', err)
+    } finally {
+      this.preparingPrint = false
+    }
+    window.print()
+  }
+
+  /** Background agent: rewrite the raw output into a polished executive report. */
+  private async generateReport() {
+    if (!this.output || this.generatingReport) return
+    this.generatingReport = true
+    try {
+      const report = await callLLM(
+        `You are a professional report writer. You take raw multi-agent analysis output and rewrite it into a polished, well-structured executive report.
+
+Rules:
+- Use proper markdown: clear headings (##, ###), bullet points, bold for emphasis, tables where data is tabular
+- Open with a concise Executive Summary (3-5 sentences)
+- Organize the body into logical sections with clear headings
+- Preserve ALL data, numbers, tickers, and specific findings — do not summarize away detail
+- Remove any JSON artifacts, agent routing prefixes, protocol fields, or internal chatter
+- Use professional, authoritative tone — no hedging, no disclaimers
+- End with Key Risks and Recommendations sections if the content supports them
+- Do NOT add information that isn't in the source material`,
+        [{
+          role: 'user',
+          content: `Task: ${this.task}\n\nRaw output:\n\n${this.output}`,
+        }],
+        this.settings,
+      )
+      // Only set if we haven't started a new session while waiting
+      if (this.output && !this.isRunning) {
+        this.reportMarkdown = report
+      }
+    } catch (err) {
+      console.warn('Report generation failed:', err)
+    } finally {
+      this.generatingReport = false
+    }
   }
 
   injectHumanMessage(agentId: string, content: string) {
@@ -839,7 +956,7 @@ class GremlinStore {
     ]
 
     try {
-      await this.runner.run(this.task, this.agentConfigs, this.settings, this.attachments, this.makeCallbacks(), tools)
+      await this.runner.run(this.task, this.agentConfigs, this.effectiveSettings, this.attachments, this.makeCallbacks(), tools)
     } catch (err) {
       // onDone is guaranteed to be called by runner.run()'s finally block,
       // so just log the error here — cleanup is already handled.
@@ -889,6 +1006,9 @@ class GremlinStore {
           }
         }
       },
+      onRoundsWarning: (currentRound, maxRounds) => {
+        this.roundsWarning = { currentRound, maxRounds }
+      },
       onUnknownAgent: (_fromAgent, name) => {
         return new Promise<boolean>((resolve) => {
           this.pendingAgentSuggestion = { name, resolve }
@@ -923,6 +1043,7 @@ class GremlinStore {
         this.webllmProgress = null
         this.streamingAgentId = null
         this.streamingText    = ''
+        this.roundsWarning  = null
         this.syncAgentStates()
         // Merge performance metrics into agent states
         if (this.runner) {
@@ -936,6 +1057,8 @@ class GremlinStore {
         this.flushSession()
         this.archiveCurrentSession()
         this.releaseModels()
+        // Kick off background report generation
+        if (this.output) this.generateReport()
       },
     }
   }

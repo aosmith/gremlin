@@ -39,6 +39,8 @@ export interface RunnerCallbacks {
   onStream?: (agentId: string | null, delta: string, accumulated: string) => void
   /** Called when an agent tries to message a hallucinated agent name. Returns true if user created the agent. */
   onUnknownAgent?: (fromAgent: string, name: string) => Promise<boolean>
+  /** Called when approaching the round limit (~80%). Non-blocking — UI can bump the limit. */
+  onRoundsWarning?: (currentRound: number, maxRounds: number) => void
   /** Called when round limit is hit. Returns extra rounds + instruction, or null to force-synthesize immediately. */
   onRoundsExhausted?: (currentRound: number, maxRounds: number) => Promise<{ extraRounds: number; instruction: string } | null>
   /** Called when an agent uses web_search but no provider is configured. Returns true if user set one up. */
@@ -50,8 +52,8 @@ export interface RunnerCallbacks {
 const MAX_HISTORY_PER_AGENT = 20
 
 /** Retry config for transient LLM errors (network failures, 429/5xx). */
-const MAX_RETRIES = 3
 const RETRY_BASE_MS = 2_000
+const RETRY_MAX_MS = 60_000
 
 /** Max agents hitting the LLM simultaneously (prevents overwhelming providers). */
 const MAX_CONCURRENT = 3
@@ -68,6 +70,7 @@ export class AgentRunner {
   private aborted = false
   private abortController = new AbortController()
   private loopRunning = false
+  private roundsWarningFired = false
   private agents: AgentConfig[] = []
   private round = 0
   /** Names already skipped or created — don't prompt again. */
@@ -98,6 +101,13 @@ export class AgentRunner {
     this.abortController.abort()
     this.histories.clear()
     this.stopHeartbeat()
+  }
+
+  /** Double the round limit mid-run. */
+  doubleRoundLimit() {
+    this.settings = { ...this.settings, maxRounds: this.settings.maxRounds * 2 }
+    this.roundsWarningFired = false  // allow warning to fire again at the new 80% mark
+    this.cb.onLog(`Round limit doubled to ${this.settings.maxRounds}`)
   }
 
   /**
@@ -360,6 +370,7 @@ export class AgentRunner {
     this.processedCounts = new Map(agents.map((a) => [a.id, 0]))
     this.seenUnknownAgents = new Set()
     this.promptedForAgents = false
+    this.roundsWarningFired = false
     this.sentContent = new Map(agents.map((a) => [a.id, []]))
     this.agentLatency = new Map(agents.map((a) => [a.id, 0]))
     this.agentTurns = new Map(agents.map((a) => [a.id, 0]))
@@ -375,7 +386,8 @@ export class AgentRunner {
     // Inject user task into orchestrator's inbox
     this.emit({ fromAgent: 'user', toAgent: orchestrator.id, content: task, type: 'task', timestamp: Date.now(), round: 0 })
 
-    callbacks.onLog(`Session started${tools.length ? ' (dev mode — file tools enabled)' : ''}`)
+    const modeLabel = settings.runMode === 'fast' ? '⚡ fast' : '🔬 thorough'
+    callbacks.onLog(`Session started (${modeLabel})${tools.length ? ' — dev tools enabled' : ''}`)
 
     // Pre-flight: detect hardware + model sizes so API calls can size num_ctx,
     // then pull any missing Ollama models before starting the agent loop.
@@ -411,6 +423,12 @@ export class AgentRunner {
       while (!this.aborted) {
         this.round++
         if (this.round > this.settings.maxRounds) break
+
+        // Warn when ~80% through the round budget (fire once)
+        if (!this.roundsWarningFired && this.round >= Math.ceil(this.settings.maxRounds * 0.8)) {
+          this.roundsWarningFired = true
+          this.cb.onRoundsWarning?.(this.round, this.settings.maxRounds)
+        }
 
         const pending = agents.filter((a) => {
           const total = coord.getMessageCountFor(a.id)
@@ -785,11 +803,15 @@ export class AgentRunner {
 
     if (summaries.size < 2) return  // nothing useful to share if only 0-1 agents ran
 
-    // Send digest to each active agent (excluding their own output)
-    for (const agent of this.agents) {
-      const status = coord.getAgentStatus(agent.id)
-      if (status === 'done' || status === 'error') continue
+    // Send digest only to orchestrators and synthesizers — they coordinate across agents.
+    // Workers do their own independent research and don't need other workers' outputs.
+    const digestRecipients = this.agents.filter((a) => {
+      const status = coord.getAgentStatus(a.id)
+      if (status === 'done' || status === 'error') return false
+      return a.role === 'orchestrator' || a.role === 'synthesizer'
+    })
 
+    for (const agent of digestRecipients) {
       const otherSummaries = [...summaries.entries()]
         .filter(([id]) => id !== agent.id)
         .map(([id, content]) => {
@@ -809,7 +831,7 @@ export class AgentRunner {
       })
     }
 
-    this.cb.onLog(`Round ${round} digest shared with ${this.agents.filter(a => { const s = coord.getAgentStatus(a.id); return s !== 'done' && s !== 'error' }).length} active agents`)
+    this.cb.onLog(`Round ${round} digest shared with ${digestRecipients.length} coordinator(s)`)
   }
 
   private forceSynthesis(synthesizer: AgentConfig, agents: AgentConfig[]): void {
@@ -1037,7 +1059,7 @@ Usually workers complete in one round. Choose (A) unless critical data is missin
     // Use per-turn signal when available (enables user-stop abort), fall back to session signal
     const signal = turnSignal ?? this.abortController.signal
 
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    for (let attempt = 0; ; attempt++) {
       try {
         const collected: CollectedState = { messages: [], done: false, result: null, hadProtocolCalls: false }
         const executor = this.createExecutor(collected, agentSettings)
@@ -1159,6 +1181,15 @@ Usually workers complete in one round. Choose (A) unless critical data is missin
           }
         }
 
+        // Emit analysis so the streamed content isn't lost when streaming clears.
+        // When there are outgoing messages the analysis was previously skipped,
+        // causing the user to see streamed text vanish with nothing to replace it.
+        if (parsed.analysis && parsed.analysis.trim()) {
+          const target = agent.role === 'synthesizer' ? 'user'
+            : this.agents.find(a => a.role === 'orchestrator')?.id ?? 'user'
+          this.emit({ fromAgent: agent.id, toAgent: target, content: parsed.analysis, type: parsed.done ? 'result' : 'message', timestamp: Date.now(), round })
+        }
+
         // Now that messages are emitted, clear the streaming text
         this.cb.onStream?.(null, '', '')
 
@@ -1173,13 +1204,14 @@ Usually workers complete in one round. Choose (A) unless critical data is missin
 
         return  // success — exit retry loop
       } catch (err) {
-        this.cb.onStream?.(null, '', '')   // clear streaming text on failure
         this.cb.onProgress?.(null)
-        if ((err instanceof Error && err.name === 'AbortError') || this.aborted || turnSignal?.aborted) {
+        const isAbort = (err instanceof Error && err.name === 'AbortError') || this.aborted || turnSignal?.aborted
+        if (isAbort) {
           // Aborted — user stopped the run or sleep-wake detected.
-          // Re-throw so runAgentTurnWithTimeout can handle it.
+          // Leave streaming text intact so user can see what was in progress.
           throw err
         }
+        this.cb.onStream?.(null, '', '')   // clear streaming text on non-abort failure
 
         const msg = err instanceof Error ? err.message : String(err)
 
@@ -1187,23 +1219,31 @@ Usually workers complete in one round. Choose (A) unless critical data is missin
         const isLocalhost = agentSettings.apiEndpoint.includes('localhost') || agentSettings.apiEndpoint.includes('127.0.0.1')
         const isConnectionRefused = msg.includes('Failed to fetch') || msg.includes('ECONNREFUSED') || msg.includes('NetworkError')
         const noRetry = msg.includes('loop exceeded') || msg.includes('CORS') || msg.includes('not running') || (isLocalhost && isConnectionRefused)
-        if (attempt < MAX_RETRIES && !noRetry) {
-          const delay = RETRY_BASE_MS * Math.pow(2, attempt)
-          this.cb.onLog(`⚠ ${agent.name} failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}): ${msg} — retrying in ${(delay / 1000).toFixed(0)}s`)
-          this.cb.onStatusUpdate(agent.id, 'waiting')
-          await new Promise<void>((resolve) => {
-            const timer = setTimeout(resolve, delay)
-            // If aborted while waiting (user stop), resolve immediately
-            const onAbort = () => { clearTimeout(timer); resolve() }
-            const sig = turnSignal ?? this.abortController.signal
-            sig.addEventListener('abort', onAbort, { once: true })
-          })
-          if (this.aborted || turnSignal?.aborted) throw new DOMException('Aborted', 'AbortError')
-        } else {
+        if (noRetry) {
           coord.updateAgentStatus(agent.id, 'error')
           this.cb.onStatusUpdate(agent.id, 'error')
-          this.emit({ fromAgent: agent.id, toAgent: 'user', content: `Error after ${MAX_RETRIES + 1} attempts: ${msg}`, type: 'error', timestamp: Date.now(), round })
+          this.emit({ fromAgent: agent.id, toAgent: 'user', content: `Error (non-retryable): ${msg}`, type: 'error', timestamp: Date.now(), round })
+          return
         }
+
+        const delay = Math.min(RETRY_BASE_MS * Math.pow(2, attempt), RETRY_MAX_MS)
+        this.cb.onLog(`⚠ ${agent.name} failed (attempt ${attempt + 1}): ${msg} — retrying in ${(delay / 1000).toFixed(0)}s`)
+        this.cb.onStatusUpdate(agent.id, 'waiting')
+        this.emit({
+          fromAgent: agent.id,
+          toAgent: 'system',
+          content: `Retry ${attempt + 1}: ${msg.slice(0, 200)}`,
+          type: 'system',
+          timestamp: Date.now(),
+          round,
+        })
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, delay)
+          const onAbort = () => { clearTimeout(timer); resolve() }
+          const sig = turnSignal ?? this.abortController.signal
+          sig.addEventListener('abort', onAbort, { once: true })
+        })
+        if (this.aborted || turnSignal?.aborted) throw new DOMException('Aborted', 'AbortError')
       }
     }
   }

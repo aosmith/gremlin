@@ -162,8 +162,9 @@
   .meta {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px 6px;
     font-size: 11px;
+    flex-wrap: wrap;
   }
   .role {
     color: var(--color-text-4);
@@ -172,7 +173,9 @@
     font-family: var(--font-mono);
     font-size: 10px;
   }
-  .status { margin-left: auto; font-size: 11px; }
+  .status { margin-left: auto; font-size: 11px; white-space: nowrap; }
+  .meta :global(.btn-stop),
+  .meta :global(.btn-retry) { margin-left: auto; }
   .status.idle    { color: var(--color-text-4); }
   .status.running { color: var(--color-accent-warn); }
   .status.waiting { color: var(--color-accent-2); }

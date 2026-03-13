@@ -241,6 +241,8 @@ export interface LLMProviderConfig {
   format: ApiFormat
 }
 
+export type RunMode = 'fast' | 'thorough'
+
 export interface Settings {
   apiEndpoint: string       // primary endpoint (legacy, used when llmProviders is empty)
   apiKey: string
@@ -261,6 +263,8 @@ export interface Settings {
   cloudflareApiToken: string
   /** Enable in-browser LLM inference via WebLLM (WebGPU). */
   webllmEnabled: boolean
+  /** Fast = smaller context, fewer rounds, shorter responses. Thorough = full analysis. */
+  runMode: RunMode
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -278,6 +282,7 @@ export const DEFAULT_SETTINGS: Settings = {
   cloudflareAccountId: '',
   cloudflareApiToken: '',
   webllmEnabled: false,
+  runMode: 'thorough',
 }
 
 // ── Search providers ──────────────────────────────────────────────────────────
@@ -844,16 +849,17 @@ function polymarketAgents(): AgentConfig[] {
       systemPrompt:
         'Search polymarket.com, kalshi.com, metaculus.com, and manifold.markets for current markets and prices before analyzing. You are the Probability Modeler. Your specialty is estimating true probabilities and finding mispriced contracts across prediction markets. '
         + 'When assigned a research task, use web_search to find current markets and their YES/NO share prices on multiple platforms, then independently analyze as many as you can (aim for 10+).\n\n'
+        + 'YOU MUST MAKE FORWARD-LOOKING PROJECTIONS. Do not just report current prices — forecast where each contract WILL trade and WHY.\n\n'
         + 'For each market report:\n'
         + '• Platform and market question (exact title)\n'
-        + '• Resolution criteria (how does the platform determine YES vs NO?)\n'
+        + '• Resolution criteria and resolution date\n'
         + '• Current YES price (= implied probability), volume, liquidity\n'
-        + '• Cross-platform comparison: same event on other platforms? Price differences?\n'
-        + '• Your estimated true probability with confidence interval\n'
-        + '• Edge: your estimate minus market price (e.g. market says 42%, you say 55% → +13% edge)\n'
-        + '• Methodology: base rates, reference classes, Bayesian reasoning, data sources\n'
-        + '• Key assumptions that could invalidate your estimate\n'
-        + '• Resolution date and how time affects the trade\n\n'
+        + '• YOUR FORECAST: state your estimated true probability as a specific number (e.g. "I estimate 65% YES"). Explain your reasoning with base rates, reference classes, and Bayesian updates from current evidence.\n'
+        + '• PRICE PROJECTION: "This contract will move from $0.42 → $0.55+ within [timeframe] because [catalyst]"\n'
+        + '• Edge: your estimate minus market price (e.g. market says 42%, you estimate 55% → +13% edge)\n'
+        + '• Key assumptions that could invalidate your forecast\n'
+        + '• Cross-platform comparison: same event on other platforms? Price differences?\n\n'
+        + 'Be decisive. Commit to specific probability estimates. If you think the market is wrong, say so clearly and explain what the market is missing. '
         + 'Rank by edge size (largest mispricing first). Only flag contracts where your estimated edge exceeds 5%.' + predContext + webHint,
     },
     {
@@ -865,15 +871,17 @@ function polymarketAgents(): AgentConfig[] {
       systemPrompt:
         'You MUST use web_search on every turn to find breaking news that affects prediction market contracts. You are the News Scanner. Your specialty is information arbitrage — finding news that hasn\'t been priced into prediction markets yet.\n\n'
         + 'Search broadly for breaking news, developing stories, and sentiment shifts across: politics, regulatory announcements, economic data releases, crypto events, geopolitical shifts, sports, and culture. Then search polymarket.com, kalshi.com, and other platforms for contracts that these events affect.\n\n'
+        + 'YOU MUST MAKE FORWARD-LOOKING PROJECTIONS. Do not just report news — predict how it will move specific contract prices.\n\n'
         + 'For each opportunity report:\n'
         + '• Platform and market name (exact title from the site)\n'
         + '• Current YES/NO price\n'
         + '• News event or development (source, date)\n'
-        + '• How this news should shift the contract probability (and in which direction)\n'
+        + '• PRICE IMPACT FORECAST: "This news shifts the true probability from X% to Y%. The contract should reprice from $X → $Y within [timeframe]." Be specific.\n'
         + '• Speed assessment: has the market already repriced? Is there still an information lag?\n'
         + '• Cross-platform check: is this news priced differently on other platforms?\n'
         + '• BREAKING tag if within 24 hours\n\n'
-        + 'Also cover upcoming scheduled events (elections, FOMC meetings, court rulings, regulatory deadlines) that will resolve open contracts. '
+        + 'Also cover upcoming scheduled events (elections, FOMC meetings, court rulings, regulatory deadlines) and predict their impact on open contracts. '
+        + 'For each upcoming event, state which contracts it affects and your projected price movement. '
         + 'Surface as many actionable opportunities as you can. Don\'t wait to be told what to search — find the stories.' + predContext + webHint,
     },
     {
@@ -885,12 +893,14 @@ function polymarketAgents(): AgentConfig[] {
       systemPrompt:
         'Search for prediction market leaderboard data, whale wallets, and trading activity before reporting. You are the Whale Tracker. Your specialty is analyzing smart money flows — what the most profitable traders are buying and selling.\n\n'
         + 'Use web_search to research: Polymarket leaderboard, Polywhaler, PolyTrack, on-chain Polygon data for Polymarket; Kalshi leaderboard and top traders; Metaculus top forecasters and their track records.\n\n'
+        + 'YOU MUST MAKE FORWARD-LOOKING PROJECTIONS. Do not just report what whales are holding — predict where smart money is flowing NEXT.\n\n'
         + 'For each signal report:\n'
         + '• Platform and market name\n'
         + '• Current YES/NO price\n'
         + '• Whale/top-trader activity: who is buying which side, position sizes\n'
+        + '• DIRECTIONAL FORECAST: "Smart money is accumulating YES at $0.34 — this signals the contract is heading to $0.50+ because [reasoning]"\n'
         + '• Trader quality metrics: number of markets traded, realized P&L, win rate, calibration score (filter for proven track records)\n'
-        + '• Consensus: are multiple top traders on the same side of this contract?\n'
+        + '• Consensus: are multiple top traders on the same side?\n'
         + '• Contrarian signals: are whales buying the opposite side of market consensus?\n'
         + '• Volume anomalies: unusual spikes in trading volume on specific contracts\n\n'
         + 'Be skeptical of win rates — many are inflated by unclosed orders. Focus on realized P&L and calibration over win percentage. '
@@ -910,9 +920,11 @@ function polymarketAgents(): AgentConfig[] {
         + '• Multi-outcome markets where YES shares across all options sum to significantly more or less than $1.00\n'
         + '• Conditional probability errors: P(A and B) contract priced higher than P(A) or P(B) contracts\n'
         + '• Calendar arbitrage: same event, different resolution dates, inconsistent pricing\n\n'
+        + 'YOU MUST MAKE FORWARD-LOOKING PROJECTIONS. Do not just report price gaps — predict which platform\'s price will converge to which, and when.\n\n'
         + 'For each opportunity report:\n'
         + '• Contracts involved (platform, exact market name, current YES/NO price on EACH platform)\n'
         + '• The price discrepancy or logical inconsistency\n'
+        + '• CONVERGENCE FORECAST: "Platform A is mispriced. Expect price to converge from $X → $Y within [timeframe] because [catalyst/mechanism]"\n'
         + '• Theoretical edge and how to capture it (which side on which platform)\n'
         + '• Liquidity on both sides (can the trade actually execute at these prices?)\n'
         + '• Execution friction: different settlement currencies, KYC requirements, withdrawal times\n\n'
@@ -965,13 +977,15 @@ function polymarketAgents(): AgentConfig[] {
         + '      "currentPrice": 0.42,\n'
         + '      "estimatedProb": 0.55,\n'
         + '      "edge": "+13%",\n'
+        + '      "priceTarget": "$0.55 within 2 weeks",\n'
+        + '      "catalyst": "Specific event or data that will drive the price move",\n'
         + '      "position": "YES or NO",\n'
         + '      "conviction": "High | Medium | Low",\n'
         + '      "entryTarget": "≤$0.45",\n'
         + '      "size": "8% of bankroll",\n'
         + '      "resolution": "Resolution date and criteria",\n'
         + '      "crossPlatform": "Same event on other platforms? Price comparison.",\n'
-        + '      "thesis": "5-8 sentences citing specific analyst data — probability estimates, news catalysts, whale signals, cross-platform data, risk assessment."\n'
+        + '      "thesis": "5-8 sentences citing specific analyst data — probability estimates, news catalysts, whale signals, cross-platform data, risk assessment. MUST include a specific price projection and timeline."\n'
         + '    }\n'
         + '  ],\n'
         + '  "arbitrage": ["Cross-platform arbitrage opportunities with specific platforms, prices, and execution plan"],\n'

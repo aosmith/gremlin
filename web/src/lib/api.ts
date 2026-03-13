@@ -74,8 +74,9 @@ function computeNumCtx(modelName: string): number {
   if (_gpuMemoryGB === 0) return 8192  // no hardware info — safe default
 
   const modelGB = _modelSizeMap.get(modelName) ?? 0
-  // Available memory for KV cache = 85% of GPU (OS headroom) minus model weights
-  const kvBudgetGB = _gpuMemoryGB * 0.85 - modelGB
+  // Available memory for KV cache = 95% of GPU minus model weights
+  // (unified memory machines can use nearly all RAM for inference)
+  const kvBudgetGB = _gpuMemoryGB * 0.95 - modelGB
 
   if (kvBudgetGB <= 0) return 2048     // model barely fits — minimal context
   if (kvBudgetGB < 1) return 4096
@@ -440,7 +441,7 @@ async function callOpenAIWithTools(
   let activeTools: OAITool[] | undefined = tools
   const msgs: OAIMsg[] = [{ role: 'system', content: system }, ...messages.map((m) => ({ role: m.role, content: toOaiContent(m) } as OAIMsg))]
 
-  for (let round = 0; round < 4; round++) {
+  for (let round = 0; round < 12; round++) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     let resp: Response
     const useStream = !!onStream
@@ -576,7 +577,7 @@ async function callAnthropicWithTools(
 
   const msgs: AMsg[] = messages.map((m) => ({ role: m.role, content: toAnthropicContent(m) }))
 
-  for (let round = 0; round < 4; round++) {
+  for (let round = 0; round < 12; round++) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     const useStream = !!onStream
     const resp = await anthropicFetch(settings, system, msgs, tools, signal, useStream)
@@ -672,7 +673,7 @@ async function callWebLLMWithTools(
   const eng = await getEngine(settings.model, onProgress)
   const msgs: OAIMsg[] = [{ role: 'system', content: system }, ...messages.map((m) => ({ role: m.role, content: toOaiContent(m) } as OAIMsg))]
 
-  for (let round = 0; round < 4; round++) {
+  for (let round = 0; round < 12; round++) {
     const resp = await eng.chat.completions.create({
       messages: msgs as Parameters<typeof eng.chat.completions.create>[0]['messages'],
       max_tokens: 4096,

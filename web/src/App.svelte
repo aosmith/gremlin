@@ -55,6 +55,12 @@
     : ''
   )
 
+  // Polished report for print view (falls back to outputHtml)
+  const reportHtml = $derived(store.reportMarkdown
+    ? sanitizeHtml(enhanceProse(marked.parse(store.reportMarkdown) as string))
+    : ''
+  )
+
   function copyOutput() {
     if (store.output) navigator.clipboard.writeText(cleanOutputForCopy(store.output))
   }
@@ -114,6 +120,18 @@
 {/if}
 {#if store.showModeCreate}
   <NewModeModal onclose={() => (store.showModeCreate = false)} />
+{/if}
+
+{#if store.preparingPrint}
+  <div class="modal-backdrop" role="dialog" aria-modal="true">
+    <div class="modal print-modal">
+      <div class="modal-header">Preparing Report</div>
+      <div class="modal-body">
+        <p class="muted">{store.generatingReport ? 'Polishing report for print…' : 'Generating agent descriptions…'}</p>
+        <div class="print-spinner"></div>
+      </div>
+    </div>
+  </div>
 {/if}
 
 {#if store.pendingAgentSuggestion && store.showAgentEdit === null}
@@ -206,6 +224,25 @@
           disabled={!store.settings.searchProviders?.length}
           onclick={() => store.resolveSearchSetup()}
         >Save & Search</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if store.roundsWarning}
+  {@const warn = store.roundsWarning}
+  <div class="modal-backdrop" role="dialog" aria-modal="true">
+    <div class="modal rounds-warning-modal">
+      <div class="modal-header">
+        Approaching Round Limit
+        <span class="rounds-badge">{warn.currentRound} / {warn.maxRounds}</span>
+      </div>
+      <div class="modal-body">
+        <p>Agents have used {warn.currentRound} of {warn.maxRounds} rounds. Running low on budget.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="ghost" onclick={() => store.dismissRoundsWarning()}>Dismiss</button>
+        <button class="primary" onclick={() => store.doubleRoundLimit()}>Double to {warn.maxRounds * 2}</button>
       </div>
     </div>
   </div>
@@ -382,6 +419,12 @@
             title="Export session as JSON"
             aria-label="Export session"
           >Export</button>
+          <button
+            class="ghost btn-sm"
+            onclick={() => store.preparePrint()}
+            title={store.generatingReport ? 'Report is being prepared…' : 'Print report'}
+            aria-label="Print report"
+          >{store.generatingReport ? 'Print…' : 'Print'}</button>
         {/if}
         <button
           class="ghost btn-sm"
@@ -418,6 +461,20 @@
           title="Settings"
           aria-label="Settings"
         >⚙</button>
+        <div class="run-mode-toggle" title="Fast: fewer rounds, smaller context. Thorough: full analysis.">
+          <button
+            class="run-mode-btn"
+            class:active={store.settings.runMode === 'fast'}
+            onclick={() => store.updateSettings({ runMode: 'fast' })}
+            disabled={store.isRunning}
+          >⚡ Fast</button>
+          <button
+            class="run-mode-btn"
+            class:active={store.settings.runMode !== 'fast'}
+            onclick={() => store.updateSettings({ runMode: 'thorough' })}
+            disabled={store.isRunning}
+          >🔬 Thorough</button>
+        </div>
         {#if store.isRunning}
           <button class="danger" onclick={() => store.stopRun()} aria-label="Stop run">⏹ Stop</button>
         {:else}
@@ -583,7 +640,11 @@
         streamingAgentId={store.streamingAgentId}
         streamingText={store.streamingText}
         outputHtml={outputHtml}
+        {reportHtml}
         isRunning={store.isRunning}
+        task={store.task}
+        modeDescription={store.currentModeInfo.description}
+        agentDescriptions={store.agentDescriptions}
         onCopy={copyOutput}
         onReply={handleReply}
         onRetry={(agentId) => store.retryAgent(agentId)}
@@ -786,6 +847,39 @@
 
   .nav-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
   .run-btn { min-width: 80px; }
+
+  .run-mode-toggle {
+    display: flex;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .run-mode-btn {
+    background: none;
+    border: none;
+    border-radius: 0;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-text-3);
+    cursor: pointer;
+    transition: all var(--t-fast);
+    height: auto;
+    white-space: nowrap;
+  }
+  .run-mode-btn:hover:not(:disabled) {
+    color: var(--color-text);
+    background: var(--glass);
+  }
+  .run-mode-btn.active {
+    color: var(--color-accent);
+    background: var(--glass-tinted);
+  }
+  .run-mode-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .run-mode-btn + .run-mode-btn {
+    border-left: 1px solid var(--glass-border);
+  }
 
   .btn-xs { font-size: 11px; padding: 4px 10px; }
   .btn-sm { font-size: 11px; }
@@ -1036,6 +1130,17 @@
     line-height: 1.6;
   }
 
+  /* ── Rounds warning modal ─────────────────────────────────────────── */
+  .rounds-warning-modal {
+    max-width: 400px;
+  }
+  .rounds-warning-modal p {
+    margin: 0;
+    font-size: 13px;
+    color: var(--color-text-2);
+    line-height: 1.5;
+  }
+
   /* ── Rounds exhausted modal ────────────────────────────────────────── */
   .rounds-modal {
     max-width: 440px;
@@ -1062,5 +1167,35 @@
     font-weight: 400;
     text-transform: none;
     letter-spacing: 0;
+  }
+
+  /* ── Print preparation modal ──────────────────────────────────────── */
+  .print-modal {
+    max-width: 320px;
+    text-align: center;
+  }
+  .print-modal p {
+    margin: 0;
+    font-size: 13px;
+  }
+  .print-spinner {
+    width: 24px;
+    height: 24px;
+    margin: 4px auto 0;
+    border: 2px solid var(--color-border);
+    border-top-color: var(--color-accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  /* ── Print: break out of fixed viewport ──────────────────────────────── */
+  @media print {
+    .app { height: auto !important; overflow: visible !important; }
+    .workspace { display: block !important; overflow: visible !important; height: auto !important; }
+    .monitor-col { width: 100% !important; max-width: 100% !important; overflow: visible !important; height: auto !important; flex: none !important; padding: 0 !important; }
+    .navbar, .mode-tabs, .sidebar, .right-col, .agent-panel-col { display: none !important; }
   }
 </style>
