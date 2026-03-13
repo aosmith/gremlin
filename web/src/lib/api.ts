@@ -175,6 +175,27 @@ type OAIMsg =
 
 // ── OpenAI SSE stream parser ─────────────────────────────────────────────────
 
+/**
+ * Extract readable text from partial tool call JSON args.
+ * For send_message → shows the "content" field; for mark_done → shows "result".
+ * Returns empty string if no readable text found yet.
+ */
+function extractToolCallText(name: string, args: string): string {
+  const field = name === 'mark_done' || name === 'set_result' ? 'result' : 'content'
+  // Match the field value — handles partial JSON where closing quote may not exist yet
+  const match = args.match(new RegExp(`"${field}"\\s*:\\s*"([\\s\\S]*)$`))
+  if (!match) return ''
+  let text = match[1]
+  // Remove trailing quote + any JSON after it (next field or closing brace)
+  if (text.endsWith('"}') || text.endsWith('",')) text = text.slice(0, -2)
+  else if (text.endsWith('"')) text = text.slice(0, -1)
+  return text
+    .replace(/\\n/g, '\n')
+    .replace(/\\"/g, '"')
+    .replace(/\\t/g, '\t')
+    .replace(/\\\\/g, '\\')
+}
+
 async function streamOpenAIResponse(
   resp: Response,
   onStream?: StreamCallback,
@@ -200,7 +221,14 @@ async function streamOpenAIResponse(
         const existing = toolCallMap.get(idx) ?? { id: '', name: '', args: '' }
         if (tc.id) existing.id = tc.id
         if (tc.function?.name) existing.name += tc.function.name
-        if (tc.function?.arguments) existing.args += tc.function.arguments
+        if (tc.function?.arguments) {
+          existing.args += tc.function.arguments
+          // Stream extracted readable text, not raw JSON
+          const readable = extractToolCallText(existing.name, existing.args)
+          if (readable) {
+            onStream?.(tc.function.arguments, content + readable)
+          }
+        }
         toolCallMap.set(idx, existing)
       }
     }
@@ -258,6 +286,11 @@ async function streamAnthropicResponse(
           onStream?.(delta.text, textAccumulated)
         } else if (delta.type === 'input_json_delta' && block?.type === 'tool_use') {
           block._rawInput = (block._rawInput ?? '') + delta.partial_json
+          // Stream extracted readable text, not raw JSON
+          const readable = extractToolCallText(block.name ?? '', block._rawInput)
+          if (readable) {
+            onStream?.(delta.partial_json, textAccumulated + readable)
+          }
         }
         break
       }

@@ -268,7 +268,7 @@ export const DEFAULT_SETTINGS: Settings = {
   apiKey: '',
   model: '',
   apiFormat: 'openai',
-  maxRounds: 8,
+  maxRounds: 32,
   proxyUrl: '/cors-proxy',
   searchProviders: ['duckduckgo', 'searxng'],
   searchApiKey: '',
@@ -368,7 +368,7 @@ function editorAgent(): AgentConfig {
     name: 'Editor',
     role: 'worker',
     color: '#8b949e',
-    model: 'mistral-small:24b',
+    model: 'command-r:35b',
     systemPrompt:
       'You are the Editor. Your ONLY job: take drafts from other agents and return clean, scannable Markdown. You do NOT change meaning, data, or conclusions — only structure and formatting. Output is rendered as Markdown in a dark-themed glass-morphism monitor UI.\n\n'
       + 'GOAL: A human should be able to scan your output in 10 seconds and find any key number or conclusion.\n\n'
@@ -450,7 +450,7 @@ export function defaultAgents(): AgentConfig[] {
       name: 'Writer',
       role: 'worker',
       color: AGENT_COLORS[5],
-      model: 'mistral-small:24b',
+      model: 'command-r:35b',
       systemPrompt:
         'Search for current context, terminology, and developments relevant to the topic before writing. You are the Writer. Transform raw analysis and findings into clear, polished, audience-appropriate prose. Structure content logically, eliminate jargon where unnecessary, and ensure the output reads as a coherent narrative — not a collection of bullet points. Adapt tone and format to the task: executive memo, technical report, creative piece, or whatever fits.' + webHint,
     },
@@ -663,7 +663,7 @@ function financeAgents(): AgentConfig[] {
       name: 'Quant Analyst',
       role: 'worker',
       color: AGENT_COLORS[2],
-      model: 'mistral-small:24b',
+      model: 'command-r:35b',
       systemPrompt:
         'You are the Quant Analyst. Your specialty is real-time market data, price action, and technical analysis. '
         + 'You MUST use web_fetch() to pull real price data before analyzing.\n\n'
@@ -1011,7 +1011,7 @@ function industrialAgents(): AgentConfig[] {
       name: 'Manufacturing Eng',
       role: 'worker',
       color: AGENT_COLORS[1],
-      model: 'mistral-small:24b',
+      model: 'command-r:35b',
       systemPrompt:
         'Search for current equipment costs, process benchmarks, and industry data before analyzing. You are the Manufacturing Engineer. Analyse process flows, tooling, capacity, cycle times, and capital equipment requirements. Identify bottlenecks, propose process improvements (Lean/Six Sigma), and evaluate make-vs-buy decisions. Provide detailed BOMs, routings, and engineering change recommendations.' + webHint,
     },
@@ -1020,7 +1020,7 @@ function industrialAgents(): AgentConfig[] {
       name: 'Operations Manager',
       role: 'worker',
       color: AGENT_COLORS[2],
-      model: 'mistral-small:24b',
+      model: 'command-r:35b',
       systemPrompt:
         'Search for current OEE benchmarks, labor data, and throughput metrics before planning. You are the Operations Manager. Own plant scheduling, labour planning, OEE, throughput, and on-time delivery. Flag capacity constraints and shift patterns. Apply theory of constraints thinking — identify the bottleneck and focus improvements there first. Quantify impact in units, hours, and cost.' + webHint,
     },
@@ -1082,7 +1082,7 @@ function networkingAgents(): AgentConfig[] {
       name: 'Transport Engineer',
       role: 'worker',
       color: AGENT_COLORS[1],
-      model: 'mistral-small:24b',
+      model: 'command-r:35b',
       systemPrompt:
         'Search for current vendor advisories, firmware versions, and known optical issues before diagnosing. You are the Transport Engineer — physical and optical layer specialist. Diagnose fiber cuts, DWDM/WDM lambda issues, SONET/SDH alarms (LOS, LOF, AIS, RDI), microwave fade events, and dark fiber problems. Analyse OTDR traces, BER measurements, span-loss budgets, and optical power levels. Identify affected spans, nodes, and ring protection switching (UPSR/BLSR). Coordinate with field crews for physical repairs and provide estimated restoration times. Reference ITU-T G.709/G.798 OTN and SONET/SDH standards as applicable.' + webHint,
     },
@@ -1091,7 +1091,7 @@ function networkingAgents(): AgentConfig[] {
       name: 'IP/MPLS Engineer',
       role: 'worker',
       color: AGENT_COLORS[2],
-      model: 'mistral-small:24b',
+      model: 'command-r:35b',
       systemPrompt:
         'Search for current BGP route leaks, vendor bugs, and peering issues before troubleshooting. You are the IP/MPLS Engineer — routing and switching specialist. Diagnose BGP session flaps, OSPF/IS-IS adjacency issues, MPLS LSP failures, RSVP-TE and LDP problems, and segment routing anomalies. Analyse routing tables, traceroutes, packet captures, and traffic engineering policies. Troubleshoot ECMP load-balancing issues, peering disputes, MTU mismatches, and convergence delays. Evaluate traffic shifts, capacity utilisation, and QoS policy enforcement. Reference RFC 4271 (BGP), RFC 3031 (MPLS), and vendor-specific CLI outputs.' + webHint,
     },
@@ -1100,7 +1100,7 @@ function networkingAgents(): AgentConfig[] {
       name: 'Voice/UC Engineer',
       role: 'worker',
       color: AGENT_COLORS[3],
-      model: 'mistral-small:24b',
+      model: 'command-r:35b',
       systemPrompt:
         'Search for current SIP/IMS advisories and vendor documentation before diagnosing. You are the Voice/UC Engineer — voice and unified communications specialist. Diagnose SIP registration failures, SS7 signaling issues (ISUP/TCAP), IMS/VoLTE call setup problems, and RTP quality degradation (MOS scores, jitter, packet loss, R-factor). Troubleshoot codec negotiation, number portability (LNP) routing, E911 routing, SBC configuration, and call flow analysis. Analyse SIP ladder diagrams, SS7 MSU traces, and CDR records. Reference RFC 3261 (SIP), ITU-T Q.76x (ISUP), and 3GPP IMS specifications as applicable.' + webHint,
     },
@@ -1109,7 +1109,7 @@ function networkingAgents(): AgentConfig[] {
       name: 'RF/Wireless Engineer',
       role: 'worker',
       color: AGENT_COLORS[5],
-      model: 'mistral-small:24b',
+      model: 'command-r:35b',
       systemPrompt:
         'Search for current cell site data, spectrum updates, and firmware advisories before analyzing. You are the RF/Wireless Engineer — radio access network specialist. Diagnose cell site outages, 4G LTE (eNodeB) and 5G NR (gNodeB) issues, interference problems, and handover failures. Analyse RSRP, RSRQ, SINR thresholds, and drive test data. Evaluate antenna tilt/azimuth configurations, small cell deployments, carrier aggregation, and capacity planning. Troubleshoot fronthaul/backhaul connectivity, RAN software faults, and spectrum utilisation. Reference 3GPP TS 36.xxx (LTE) and 38.xxx (NR) standards as applicable.' + webHint,
     },

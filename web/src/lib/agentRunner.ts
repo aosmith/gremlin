@@ -14,6 +14,7 @@ import { callLLMWithTools, ensureOllamaModels, initLocalModelProfile } from './a
 import type { ToolCallEvent, StreamCallback } from './api'
 import type { OAITool, ToolExecutor, ToolCallRecord } from './tools'
 import { PROTOCOL_TOOLS, PROTOCOL_TOOL_NAMES, executeTool } from './tools'
+import { performWebSearch } from './search'
 import type { ProgressCallback } from './webllm'
 import * as coord from './coordinator'
 import type { AgentConfig, AgentResponse, AgentStatus, Attachment, LLMMessage, Message, Settings } from './types'
@@ -264,6 +265,54 @@ export class AgentRunner {
     }
   }
 
+  /**
+   * Auto-ground the session with current web data before agents start.
+   * Runs 1-2 searches based on the task and injects results as a system
+   * message to the orchestrator so all downstream agents get fresh context.
+   */
+  private async groundWithSearch(task: string, orchestrator: AgentConfig): Promise<void> {
+    if (!this.tools.some((t) => t.function.name === 'web_search')) return
+    if (this.aborted) return
+
+    const now = new Date()
+    const dateSuffix = `${now.toLocaleDateString('en-US', { month: 'long' })} ${now.getFullYear()}`
+
+    // Build 1-2 grounding queries from the task
+    const shortTask = task.slice(0, 200).trim()
+    const queries = [`${shortTask} ${dateSuffix}`]
+
+    this.cb.onLog('Grounding: searching for current data…')
+
+    const results: string[] = []
+    for (const q of queries) {
+      if (this.aborted) break
+      try {
+        const r = await performWebSearch(q, this.settings, this.abortController.signal)
+        if (r && !r.startsWith('No results')) results.push(r)
+      } catch {
+        // Search failed — continue without grounding
+      }
+    }
+
+    if (results.length === 0) {
+      this.cb.onLog('Grounding: no search results — agents will use web_search as needed')
+      return
+    }
+
+    // Inject grounding data as a system message to the orchestrator
+    const groundingContent = `── Current web data (auto-searched at session start) ──\n${results.join('\n\n')}\n\nUse this data as your starting context. Search for more detail as needed.`
+    this.emit({
+      fromAgent: 'system',
+      toAgent: orchestrator.id,
+      content: groundingContent,
+      type: 'system',
+      timestamp: Date.now(),
+      round: 0,
+    })
+
+    this.cb.onLog(`Grounding: injected ${results.length} search result(s) as context`)
+  }
+
   /** Combine protocol tools with any dev tools (file ops in engineering mode). */
   private buildAllTools(): OAITool[] {
     return [...PROTOCOL_TOOLS, ...this.tools]
@@ -335,6 +384,9 @@ export class AgentRunner {
       await initLocalModelProfile(localEndpoints)
     }
     await this.ensureMissingModels()
+
+    // Auto-ground agents with current web data so they don't rely on stale training data
+    await this.groundWithSearch(task, orchestrator)
 
     // Start sleep-wake detector so stale fetches are aborted after system resume
     this.startHeartbeat()

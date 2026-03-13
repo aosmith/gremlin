@@ -59,7 +59,7 @@ function saveMode(m: AppMode) { lsSet('gremlin_mode', m) }
 // ── Builtin preset versioning ────────────────────────────────────────────────
 // Bump this whenever builtin mode agents are updated. On load, new agents that
 // don't exist in the user's saved config are merged in — but user edits are preserved.
-const BUILTIN_AGENTS_VERSION = 12
+const BUILTIN_AGENTS_VERSION = 13
 const VERSION_KEY = 'gremlin_builtin_agents_version'
 
 function migrateBuiltinAgents() {
@@ -75,12 +75,17 @@ function migrateBuiltinAgents() {
     const defaultMap = new Map(defaults.map((a) => [a.id, a]))
     const savedIds = new Set(saved.map((a) => a.id))
 
-    // Update systemPrompt for existing agents from code defaults
+    // Update systemPrompt and model for existing agents from code defaults
     let changed = false
     for (const agent of saved) {
       const def = defaultMap.get(agent.id)
-      if (def && agent.systemPrompt !== def.systemPrompt) {
+      if (!def) continue
+      if (agent.systemPrompt !== def.systemPrompt) {
         agent.systemPrompt = def.systemPrompt
+        changed = true
+      }
+      if (def.model && agent.model !== def.model) {
+        agent.model = def.model
         changed = true
       }
     }

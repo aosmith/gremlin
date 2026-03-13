@@ -607,3 +607,60 @@ select   { cursor: pointer; }
 .prose-sm .verdict-neg  { color: var(--color-accent-err);  background: rgba(248,81,73,0.10);  border: 1px solid rgba(248,81,73,0.25); }
 .prose-sm .num-pos { color: var(--color-accent);     font-weight: 600; }
 .prose-sm .num-neg { color: var(--color-accent-err); font-weight: 600; }
+
+/* ── Print stylesheet ─────────────────────────────────────────────────────── */
+/* Cmd+P / Ctrl+P → only the activity monitor feed prints, clean on paper.   */
+@media print {
+  /* Reset dark theme → white background, black text */
+  :root {
+    --color-bg: #fff;
+    --color-bg-2: #fff;
+    --color-surface: #fff;
+    --color-surface-2: #f5f5f5;
+    --color-text: #111;
+    --color-text-2: #333;
+    --color-text-3: #666;
+    --color-text-4: #999;
+    --color-accent: #1a7f37;
+    --color-accent-2: #0969da;
+    --color-accent-warn: #9a6700;
+    --color-accent-err: #cf222e;
+    --glass: transparent;
+    --glass-border: #ddd;
+  }
+
+  * { box-shadow: none !important; text-shadow: none !important; animation: none !important; backdrop-filter: none !important; }
+
+  html, body { background: #fff !important; }
+
+  /* Hide everything except the monitor feed */
+  .navbar, .mode-tabs, .sidebar, .right-col,
+  .restored-banner, .log-section, .reply-bar,
+  .monitor-header, .streaming-badge, .btn-retry,
+  .btn-stop, .edit-btn, .webllm-bar { display: none !important; }
+
+  /* Full-width monitor, no overflow clipping */
+  .app { height: auto; overflow: visible; }
+  .workspace { display: block !important; }
+  .monitor-col { width: 100% !important; max-width: 100% !important; flex: none !important; }
+  .monitor { height: auto !important; overflow: visible !important; border: none !important; background: #fff !important; }
+  .feed { height: auto !important; overflow: visible !important; max-height: none !important; }
+
+  /* Clean up events for paper */
+  .event { border-left-width: 2px !important; break-inside: avoid; page-break-inside: avoid; }
+  .event:hover { background: transparent !important; }
+
+  /* Final result block */
+  .final-result { border-color: #1a7f37 !important; background: #f6fff8 !important; break-inside: avoid; }
+  .result-body { color: #111; }
+  .ghost, .btn-sm { display: none !important; } /* hide Copy button etc. */
+
+  /* Badges */
+  .badge { border: 1px solid currentColor; }
+
+  /* Links should show URL */
+  a[href]::after { content: " (" attr(href) ")"; font-size: 0.85em; color: #666; }
+
+  /* Page margins */
+  @page { margin: 1.5cm; }
+}
