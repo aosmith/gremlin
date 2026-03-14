@@ -14,6 +14,7 @@
     streamingText?: string
     outputHtml?: string
     reportHtml?: string
+    execSummaryHtml?: string
     isRunning?: boolean
     task?: string
     modeDescription?: string
@@ -22,7 +23,7 @@
     onReply?: (text: string) => void
     onRetry?: (agentId: string) => void
   }
-  const { messages, agents, logs, streamingAgentId = null, streamingText = '', outputHtml = '', reportHtml = '', isRunning = false, task = '', modeDescription = '', agentDescriptions = {}, onCopy, onReply, onRetry }: Props = $props()
+  const { messages, agents, logs, streamingAgentId = null, streamingText = '', outputHtml = '', reportHtml = '', execSummaryHtml = '', isRunning = false, task = '', modeDescription = '', agentDescriptions = {}, onCopy, onReply, onRetry }: Props = $props()
 
   let replyText = $state('')
 
@@ -139,9 +140,17 @@
   </div>
 </div>
 
+{#if execSummaryHtml}
+<div class="print-exec-summary">
+  <div class="exec-header">Executive Summary</div>
+  <div class="exec-rule"></div>
+  <div class="exec-body prose-sm">{@html sanitizeHtml(execSummaryHtml)}</div>
+</div>
+{/if}
+
 {#if reportHtml}
 <div class="print-report">
-  <div class="report-header">Report</div>
+  <div class="report-header">Full Report</div>
   <div class="report-rule"></div>
   <div class="report-body prose-sm">{@html sanitizeHtml(reportHtml)}</div>
 </div>
@@ -477,7 +486,7 @@
   }
 
   /* ── Print-only pages ──────────────────────────────────────── */
-  .print-cover, .print-agents, .print-report {
+  .print-cover, .print-agents, .print-exec-summary, .print-report {
     display: none;
   }
 
@@ -491,7 +500,34 @@
     .monitor:not(.has-report) { height: auto !important; overflow: visible !important; border: none !important; background: var(--color-bg) !important; }
     .monitor:not(.has-report) .feed { height: auto !important; overflow: visible !important; max-height: none !important; padding: 28px 32px !important; }
 
-    /* ── Report page ──────────────────────────────────────────────── */
+    /* ── Executive summary (1 page) ──────────────────────────────── */
+    .print-exec-summary {
+      display: block;
+      padding: 48px 48px 32px;
+      background: var(--color-bg);
+      break-after: page;
+    }
+    .exec-header {
+      font-family: var(--font-mono);
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--color-text);
+      letter-spacing: 0.04em;
+    }
+    .exec-rule {
+      width: 40px;
+      height: 2px;
+      background: var(--color-accent);
+      margin: 12px 0 24px;
+      opacity: 0.6;
+    }
+    .exec-body {
+      font-size: 14px;
+      line-height: 1.8;
+      color: var(--color-text);
+    }
+
+    /* ── Full report ─────────────────────────────────────────────── */
     .print-report {
       display: block;
       padding: 48px 48px 32px;

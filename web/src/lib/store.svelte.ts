@@ -273,6 +273,8 @@ class GremlinStore {
   preparingPrint = $state<boolean>(false)
   /** AI-polished report markdown (generated in background after run completes). */
   reportMarkdown = $state<string>('')
+  /** 1-page executive summary from the orchestrator's perspective. */
+  execSummary = $state<string>('')
   /** True while the background report-writer agent is running. */
   generatingReport = $state<boolean>(false)
 
@@ -711,6 +713,7 @@ class GremlinStore {
     this.logs        = []
     this.output      = ''
     this.reportMarkdown = ''
+    this.execSummary = ''
     this.generatingReport = false
     this.currentRound = 0
     this.restoredSessionId = null
@@ -875,32 +878,63 @@ class GremlinStore {
     window.print()
   }
 
-  /** Background agent: rewrite the raw output into a polished executive report. */
+  /** Background agent: rewrite the raw output into a polished executive report + exec summary. */
   private async generateReport() {
     if (!this.output || this.generatingReport) return
     this.generatingReport = true
+
+    // Collect orchestrator messages for the exec summary context
+    const orchestrator = this.agentConfigs.find(a => a.role === 'orchestrator')
+    const orchMessages = orchestrator
+      ? this.messages
+          .filter(m => m.fromAgent === orchestrator.id && m.type !== 'system')
+          .map(m => m.content)
+          .join('\n\n')
+      : ''
+
     try {
-      const report = await callLLM(
-        `You are a professional report writer. You take raw multi-agent analysis output and rewrite it into a polished, well-structured executive report.
+      // Run both LLM calls in parallel
+      const [report, summary] = await Promise.all([
+        callLLM(
+          `You are a professional report writer. You take raw multi-agent analysis output and rewrite it into a polished, well-structured executive report.
 
 Rules:
 - Use proper markdown: clear headings (##, ###), bullet points, bold for emphasis, tables where data is tabular
-- Open with a concise Executive Summary (3-5 sentences)
 - Organize the body into logical sections with clear headings
 - Preserve ALL data, numbers, tickers, and specific findings — do not summarize away detail
 - Remove any JSON artifacts, agent routing prefixes, protocol fields, or internal chatter
 - Use professional, authoritative tone — no hedging, no disclaimers
 - End with Key Risks and Recommendations sections if the content supports them
+- Do NOT add information that isn't in the source material
+- Do NOT start with an executive summary — that is produced separately`,
+          [{
+            role: 'user',
+            content: `Task: ${this.task}\n\nRaw output:\n\n${this.output}`,
+          }],
+          this.settings,
+        ),
+        callLLM(
+          `You are a senior analyst writing a 1-page executive summary for a printed intelligence report. You have access to the orchestrator's coordination notes and the final synthesized output.
+
+Rules:
+- Maximum 300 words — this MUST fit on a single printed page
+- Start with the key finding or recommendation in bold
+- Include 3-5 bullet points covering the most important conclusions
+- End with a single-sentence bottom line or call to action
+- Professional, authoritative tone — no hedging, no disclaimers
+- Use markdown: bold for emphasis, bullet points for structure
 - Do NOT add information that isn't in the source material`,
-        [{
-          role: 'user',
-          content: `Task: ${this.task}\n\nRaw output:\n\n${this.output}`,
-        }],
-        this.settings,
-      )
+          [{
+            role: 'user',
+            content: `Task: ${this.task}\n\n${orchMessages ? `Orchestrator notes:\n${orchMessages}\n\n` : ''}Final output:\n\n${this.output}`,
+          }],
+          this.settings,
+        ),
+      ])
       // Only set if we haven't started a new session while waiting
       if (this.output && !this.isRunning) {
         this.reportMarkdown = report
+        this.execSummary = summary
       }
     } catch (err) {
       console.warn('Report generation failed:', err)

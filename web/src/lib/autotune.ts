@@ -3,7 +3,7 @@
  * Includes AI-powered recommendations via in-browser WebLLM.
  */
 
-import type { AgentConfig, LLMProviderConfig } from './types'
+import type { AgentConfig, LLMProviderConfig, RunMode } from './types'
 import { BUILTIN_MODES, PROVIDERS, agentsForMode } from './types'
 import { isWebGPUAvailable, callWebLLM } from './webllm'
 import type { ProgressCallback } from './webllm'
@@ -107,7 +107,7 @@ export function classifyAgentRole(agent: AgentConfig): AgentRoleClass {
 
 // ── Model name parsing ─────────────────────────────────────────────────────────
 
-export function parseModelFamily(name: string): { family: string; parameterSize: string } {
+function parseModelFamily(name: string): { family: string; parameterSize: string } {
   const parts = name.split(':')
   const baseName = parts[0]
   const tag = parts[1] || ''
@@ -180,16 +180,14 @@ export function computeRecommendation(
   hardware: HardwareProfile,
   models: InstalledModel[],
   agents: AgentConfig[],
+  runMode: RunMode = 'intense',
 ): TuneRecommendation {
-  // Use nearly all available memory — Ollama only loads one model at a time
-  // and OLLAMA_NUM_CTX caps context so KV cache stays small. Reserve just
-  // enough for the OS to stay responsive.
-  // Reserve ~15% of GPU memory for KV cache (8K context ≈ 0.5-1.5GB)
-  // and OS overhead. Models that exceed this spill layers to CPU, which
-  // is 5-10x slower per offloaded layer — a bad trade vs a smaller model
-  // that fits entirely in GPU.
-  const usableVRAM = Math.floor(hardware.gpuMemoryGB * 0.85)
-  const fittingModels = models.filter(m => m.sizeGB <= usableVRAM)
+  // Reserve ~15% of GPU memory for KV cache + OS overhead.
+  // Fast mode: budget for 2 concurrent models (each gets half the VRAM).
+  // Intense mode: budget for 1 big model (full VRAM).
+  const totalUsable = Math.floor(hardware.gpuMemoryGB * 0.85)
+  const perModelBudget = runMode === 'fast' ? Math.floor(totalUsable / 2) : totalUsable
+  const fittingModels = models.filter(m => m.sizeGB <= perModelBudget)
   const warnings: TuneWarning[] = []
 
   if (fittingModels.length === 0) {
@@ -207,13 +205,16 @@ export function computeRecommendation(
   const agentRoles = agents.map(a => ({ agent: a, role: classifyAgentRole(a) }))
   const uniqueRoles = [...new Set(agentRoles.map(ar => ar.role))]
 
-  // Pick strategy
+  // Pick strategy — fast mode prefers dual-model for concurrent loading
   let strategy: TuneRecommendation['strategy']
-  if (usableVRAM < 18) {
+  if (runMode === 'fast') {
+    // Fast: try to fit 2 smaller models concurrently in total VRAM
+    const canDual = findBestDualModels(fittingModels, uniqueRoles, totalUsable)
+    strategy = canDual ? 'dual-model' : 'single-model'
+  } else if (totalUsable < 18) {
     strategy = 'single-model'
-  } else if (usableVRAM < 32) {
-    // Can we fit two models simultaneously?
-    const canDual = findBestDualModels(fittingModels, uniqueRoles, usableVRAM)
+  } else if (totalUsable < 32) {
+    const canDual = findBestDualModels(fittingModels, uniqueRoles, totalUsable)
     strategy = canDual ? 'dual-model' : 'single-model'
   } else {
     strategy = 'multi-model'
@@ -447,12 +448,14 @@ export async function computeAIRecommendation(
   localModel: string,
   onProgress?: ProgressCallback,
   onStatus?: (status: string) => void,
+  runMode: RunMode = 'intense',
 ): Promise<AIRecommendation | null> {
   if (!isWebGPUAvailable()) return null
   if (models.length === 0 && cloudProviders.length === 0) return null
 
   // Reserve ~15% for KV cache + OS — same budget as scored recommendation
-  const usableVRAM = Math.floor(hardware.gpuMemoryGB * 0.85)
+  const totalUsable = Math.floor(hardware.gpuMemoryGB * 0.85)
+  const usableVRAM = totalUsable
 
   // Gather all agents from all builtin modes
   const modeAgents: { mode: string; modeName: string; agents: { id: string; name: string; role: string; roleClass: AgentRoleClass }[] }[] = []
@@ -463,6 +466,7 @@ export async function computeAIRecommendation(
     modeAgents.push({
       mode: mode.id,
       modeName: mode.name,
+      modeDescription: mode.description,
       agents: agents.map(a => ({
         id: a.id,
         name: a.name,
@@ -498,7 +502,7 @@ export async function computeAIRecommendation(
   // Build agent summary per mode
   const modeInfo = modeAgents.map(m => {
     const agentList = m.agents.map(a => `  - ${a.id} "${a.name}" [${a.role}] → role_class: ${a.roleClass}`).join('\n')
-    return `MODE: ${m.modeName} (${m.mode})\n${agentList}`
+    return `MODE: ${m.modeName} (${m.mode}) — ${m.modeDescription}\n${agentList}`
   }).join('\n\n')
 
   // Build the model availability section
@@ -524,10 +528,11 @@ HOW OLLAMA USES MEMORY:
 - On top of weights, Ollama allocates a KV cache for the context window. GREMLIN caps context at 8192 tokens, so KV cache adds ~0.5-1.5GB.
 - If weights + KV cache exceed GPU VRAM, Ollama offloads layers to CPU. Each offloaded layer is 5-10x SLOWER.
 - CRITICAL: A model that fits fully in GPU with room for KV cache will be dramatically faster than a larger model with layers spilled to CPU. ALWAYS prefer a model that fits cleanly over a bigger one that spills.
-- Model weight size must be ≤ ${usableVRAM}GB to fit with KV cache headroom.
+
+RUN MODE: ${runMode === 'fast' ? 'FAST — Budget for 2 smaller models loaded concurrently (each ≤ ' + Math.floor(totalUsable / 2) + 'GB). This eliminates model swap delays between agents. Prefer smaller, faster models. Total VRAM: ' + totalUsable + 'GB.' : 'INTENSE — Budget for 1 large model using full VRAM (' + totalUsable + 'GB). Maximize model quality. Swapping between models is acceptable.'}
 
 CONSTRAINTS:
-- Ollama loads ONE model at a time. Swapping takes 10-30s. Minimize distinct local models per mode to reduce swap overhead.
+- ${runMode === 'fast' ? 'FAST MODE: Pick 2 models that fit concurrently (combined ≤ ' + totalUsable + 'GB, each ≤ ' + Math.floor(totalUsable / 2) + 'GB). This eliminates 10-30s swap delays. Prefer fast architectures (MoE, smaller param counts).' : 'INTENSE MODE: Ollama loads ONE model at a time. Swapping takes 10-30s but quality matters more than speed. Use the largest, most capable model that fits.'}
 - Cloud models have NO VRAM cost and support unlimited parallel calls.
 - If both local and cloud are available, prefer cloud for quality-critical roles (reasoning, synthesis) and local for latency-sensitive roles (orchestrator).
 
@@ -545,11 +550,11 @@ AGENTS BY MODE:
 ${modeInfo}
 
 RULES:
-1. Model weight size MUST be ≤ ${usableVRAM}GB — reject any model that exceeds this, even by 1GB
+1. ${runMode === 'fast' ? `Each local model MUST be ≤ ${Math.floor(totalUsable / 2)}GB so 2 can be loaded concurrently` : `Model weight size MUST be ≤ ${totalUsable}GB — reject any model that exceeds this`}
 2. Among models that fit, prefer the best-matched specialist for each role class
 3. Orchestrators need SPEED — prefer fast architectures (MoE, smaller models) over raw size
-4. For reasoning/synthesis roles, prefer the most capable model that fits within budget
-5. Minimize distinct LOCAL models per mode (ideally 1-2) to reduce swap overhead
+4. ${runMode === 'fast' ? 'Prefer SPEED over quality — use smaller, faster models' : 'For reasoning/synthesis roles, prefer the most capable model that fits within budget'}
+5. ${runMode === 'fast' ? 'Use exactly 2 local models (dual-model strategy) to eliminate swap overhead' : 'Minimize distinct LOCAL models per mode (ideally 1-2) to reduce swap overhead'}
 6. Cloud models can be used freely — no VRAM cost, no swap penalty
 7. Every agent MUST get a model assignment — use EXACT model names from the lists above
 8. Pick ONE global default model (the best all-rounder that fits the memory budget)

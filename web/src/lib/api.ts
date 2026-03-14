@@ -440,11 +440,17 @@ async function callOpenAIWithTools(
 ): Promise<string> {
   let activeTools: OAITool[] | undefined = tools
   const msgs: OAIMsg[] = [{ role: 'system', content: system }, ...messages.map((m) => ({ role: m.role, content: toOaiContent(m) } as OAIMsg))]
+  // Track total accumulated text across tool-call rounds so streaming doesn't reset
+  let totalAccumulated = ''
 
   for (let round = 0; round < 12; round++) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     let resp: Response
     const useStream = !!onStream
+    // Wrap the stream callback to add the prior rounds' text
+    const roundStreamCb: StreamCallback | undefined = onStream
+      ? (delta, _acc) => { totalAccumulated += delta; onStream(delta, totalAccumulated) }
+      : undefined
     try {
       resp = await oaiFetch(settings, msgs, activeTools, signal, useStream)
     } catch (err) {
@@ -462,7 +468,7 @@ async function callOpenAIWithTools(
     let toolCalls: OAIToolCall[] = []
 
     if (useStream) {
-      const result = await streamOpenAIResponse(resp, onStream)
+      const result = await streamOpenAIResponse(resp, roundStreamCb)
       content = result.content || null
       toolCalls = result.toolCalls
     } else {
@@ -576,10 +582,15 @@ async function callAnthropicWithTools(
   type AMsg = { role: 'user' | 'assistant'; content: string | ABlock[] }
 
   const msgs: AMsg[] = messages.map((m) => ({ role: m.role, content: toAnthropicContent(m) }))
+  // Track total accumulated text across tool-call rounds so streaming doesn't reset
+  let totalAccumulated = ''
 
   for (let round = 0; round < 12; round++) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     const useStream = !!onStream
+    const roundStreamCb: StreamCallback | undefined = onStream
+      ? (delta, _acc) => { totalAccumulated += delta; onStream(delta, totalAccumulated) }
+      : undefined
     const resp = await anthropicFetch(settings, system, msgs, tools, signal, useStream)
 
     // Parse response — streaming (SSE) or regular JSON
@@ -587,7 +598,7 @@ async function callAnthropicWithTools(
     let stopReason: string | null
 
     if (useStream) {
-      const result = await streamAnthropicResponse(resp, onStream)
+      const result = await streamAnthropicResponse(resp, roundStreamCb)
       contentBlocks = result.content as ABlock[]
       stopReason = result.stopReason
     } else {

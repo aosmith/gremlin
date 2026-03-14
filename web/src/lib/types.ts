@@ -241,7 +241,7 @@ export interface LLMProviderConfig {
   format: ApiFormat
 }
 
-export type RunMode = 'fast' | 'thorough'
+export type RunMode = 'fast' | 'intense'
 
 export interface Settings {
   apiEndpoint: string       // primary endpoint (legacy, used when llmProviders is empty)
@@ -263,7 +263,7 @@ export interface Settings {
   cloudflareApiToken: string
   /** Enable in-browser LLM inference via WebLLM (WebGPU). */
   webllmEnabled: boolean
-  /** Fast = smaller context, fewer rounds, shorter responses. Thorough = full analysis. */
+  /** Fast = fewer rounds. Intense = full analysis. */
   runMode: RunMode
 }
 
@@ -282,7 +282,7 @@ export const DEFAULT_SETTINGS: Settings = {
   cloudflareAccountId: '',
   cloudflareApiToken: '',
   webllmEnabled: false,
-  runMode: 'thorough',
+  runMode: 'intense',
 }
 
 // ── Search providers ──────────────────────────────────────────────────────────

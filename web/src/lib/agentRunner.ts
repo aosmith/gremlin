@@ -386,7 +386,7 @@ export class AgentRunner {
     // Inject user task into orchestrator's inbox
     this.emit({ fromAgent: 'user', toAgent: orchestrator.id, content: task, type: 'task', timestamp: Date.now(), round: 0 })
 
-    const modeLabel = settings.runMode === 'fast' ? '⚡ fast' : '🔬 thorough'
+    const modeLabel = settings.runMode === 'fast' ? '⚡ fast' : '🔬 intense'
     callbacks.onLog(`Session started (${modeLabel})${tools.length ? ' — dev tools enabled' : ''}`)
 
     // Pre-flight: detect hardware + model sizes so API calls can size num_ctx,
@@ -725,6 +725,10 @@ export class AgentRunner {
     const count = this.processedCounts.get(agentId) ?? 0
     if (count === 0) return
 
+    // Reset abort state so fetches and loop checks work
+    this.aborted = false
+    this.abortController = new AbortController()
+
     // Roll back so the agent re-processes its last batch of messages
     this.processedCounts.set(agentId, Math.max(0, count - 1))
     coord.updateAgentStatus(agentId, 'waiting')
@@ -733,20 +737,24 @@ export class AgentRunner {
 
     // Run the single agent turn directly (bypass runLoop to avoid maxRounds block)
     coord.setRunning(true)
+    this.startHeartbeat()
     this.runAgentTurn(agent, this.round).then(() => {
       // After the retry, resume the loop for any follow-on messages
       // Give it headroom by resetting the round counter
       this.round = Math.max(0, this.round - 2)
       if (!this.aborted) {
         return this.runLoop().then(() => {
+          this.stopHeartbeat()
           coord.setRunning(false)
           this.cb?.onDone()
         })
       } else {
+        this.stopHeartbeat()
         coord.setRunning(false)
         this.cb?.onDone()
       }
     }).catch((err) => {
+      this.stopHeartbeat()
       coord.setRunning(false)
       this.cb?.onLog(`✖ Fatal: ${err instanceof Error ? err.message : String(err)}`)
       try { this.cb?.onDone() } catch { /* safety */ }

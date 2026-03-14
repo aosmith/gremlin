@@ -61,6 +61,12 @@
     : ''
   )
 
+  // 1-page executive summary for print view
+  const execSummaryHtml = $derived(store.execSummary
+    ? sanitizeHtml(enhanceProse(marked.parse(store.execSummary) as string))
+    : ''
+  )
+
   function copyOutput() {
     if (store.output) navigator.clipboard.writeText(cleanOutputForCopy(store.output))
   }
@@ -393,25 +399,13 @@
             title="No model configured — click to open Settings"
           >Set Model</button>
         {/if}
-        {#if isEngineering}
-          {#if store.projectDirName}
-            <div class="folder-badge" title="Project folder: {store.projectDirName}">
-              <span>📁</span>
-              <span class="folder-name">{store.projectDirName}</span>
-              <button class="ghost icon btn-folder-close" onclick={() => store.closeProjectFolder()} title="Close folder">✕</button>
-            </div>
-          {:else}
-            <button class="ghost" onclick={() => store.openProjectFolder()} title="Select project directory for file access">
-              📁 Open Folder
-            </button>
-          {/if}
+        {#if isEngineering && store.projectDirName}
+          <div class="folder-badge" title="Project folder: {store.projectDirName}">
+            <span>📁</span>
+            <span class="folder-name">{store.projectDirName}</span>
+            <button class="ghost icon btn-folder-close" onclick={() => store.closeProjectFolder()} title="Close folder">✕</button>
+          </div>
         {/if}
-        <button
-          class="ghost"
-          onclick={() => { store.clearSession() }}
-          disabled={store.isRunning}
-          title="Clear session"
-        >↺ Clear</button>
         {#if store.messages.length > 0 && !store.isRunning}
           <button
             class="ghost btn-sm"
@@ -461,7 +455,7 @@
           title="Settings"
           aria-label="Settings"
         >⚙</button>
-        <div class="run-mode-toggle" title="Fast: fewer rounds, smaller context. Thorough: full analysis.">
+        <div class="run-mode-toggle" title="Fast: fewer rounds. Intense: full analysis.">
           <button
             class="run-mode-btn"
             class:active={store.settings.runMode === 'fast'}
@@ -471,9 +465,9 @@
           <button
             class="run-mode-btn"
             class:active={store.settings.runMode !== 'fast'}
-            onclick={() => store.updateSettings({ runMode: 'thorough' })}
+            onclick={() => store.updateSettings({ runMode: 'intense' })}
             disabled={store.isRunning}
-          >🔬 Thorough</button>
+          >🔬 Intense</button>
         </div>
         {#if store.isRunning}
           <button class="danger" onclick={() => store.stopRun()} aria-label="Stop run">⏹ Stop</button>
@@ -641,6 +635,7 @@
         streamingText={store.streamingText}
         outputHtml={outputHtml}
         {reportHtml}
+        {execSummaryHtml}
         isRunning={store.isRunning}
         task={store.task}
         modeDescription={store.currentModeInfo.description}

@@ -50,30 +50,6 @@ function cleanVisualNoise(text: string): string {
     .trim()
 }
 
-/**
- * Strip orchestrator delegation instructions meant for other agents, not humans.
- * Removes lines like "1. Send Value Analyst to...", "Please message 'Strategist'...", etc.
- */
-function stripDelegationNoise(text: string): string {
-  const lines = text.split('\n')
-  const filtered = lines.filter(line => {
-    const t = line.trim()
-    // Numbered delegation: "1. Send Value Analyst to..."
-    if (/^\d+\.\s*Send\s+[A-Z]/i.test(t)) return false
-    // Unnumbered: "Send Risk Manager to/for..."
-    if (/^Send\s+[A-Z][a-zA-Z\s]{2,30}(?:to|for)\s/i.test(t)) return false
-    // "Please message 'Agent'" / "Please message "Agent""
-    if (/^Please\s+message\s+["']/i.test(t)) return false
-    // "Message 'Agent' to..."
-    if (/^Message\s+["'][A-Z]/i.test(t)) return false
-    // "Instruct [Agent] to..." / "Direct [Agent] to..."
-    if (/^(?:Instruct|Direct|Task|Assign)\s+(?:the\s+)?[A-Z][a-zA-Z\s]{2,30}(?:to|with)\s/i.test(t)) return false
-    // "I will now send/message/direct..."
-    if (/^I\s+will\s+(?:now\s+)?(?:send|message|direct|instruct|task|assign)\b/i.test(t)) return false
-    return true
-  })
-  return filtered.join('\n').replace(/\n{3,}/g, '\n\n').trim()
-}
 
 /** Convert bare send_message("Agent", "content") calls into readable → Agent: content lines. */
 function formatSendMessageCalls(text: string): string {
@@ -96,16 +72,31 @@ export function cleanContent(raw: string): string {
   const stripped = cleanVisualNoise(raw.replace(/\[(?:From|To)\s+[^\]]+\]\s*:?\s*/gi, '').trim())
 
   const trimmed = stripped.trim()
-  if (!trimmed.startsWith('{')) return stripDelegationNoise(formatSendMessageCalls(stripped))
+  if (!trimmed.startsWith('{')) return formatSendMessageCalls(stripped)
 
   const obj = tryParseJson(trimmed)
   if (!obj) return stripped
 
   const parts: string[] = []
 
-  if (typeof obj.analysis === 'string' && obj.analysis.trim()) {
-    const cleaned = stripDelegationNoise(formatSendMessageCalls(obj.analysis.trim()))
-    if (cleaned) parts.push(cleaned)
+  // Handle analysis — may be string or object
+  if (obj.analysis != null) {
+    if (typeof obj.analysis === 'string' && obj.analysis.trim()) {
+      const cleaned = formatSendMessageCalls(obj.analysis.trim())
+      if (cleaned) parts.push(cleaned)
+    } else if (typeof obj.analysis === 'object') {
+      parts.push(renderObject(obj.analysis as Record<string, unknown>))
+    }
+  }
+
+  // Handle digest — orchestrator coordination summaries
+  if (obj.digest != null && typeof obj.digest === 'object') {
+    const digest = obj.digest as Record<string, unknown>
+    for (const [agent, summary] of Object.entries(digest)) {
+      if (typeof summary === 'string' && summary.trim()) {
+        parts.push(`**${prettifyName(agent)}**: ${summary.trim()}`)
+      }
+    }
   }
 
   if (Array.isArray(obj.messages) && obj.messages.length > 0) {
@@ -134,6 +125,8 @@ export function cleanContent(raw: string): string {
       } else if (Array.isArray(val) && val.length > 0) {
         const items = val.map((v) => typeof v === 'string' ? v : JSON.stringify(v))
         parts.push(`**${prettifyName(key)}**:\n${items.map((i) => `  • ${i}`).join('\n')}`)
+      } else if (typeof val === 'object') {
+        parts.push(renderObject(val as Record<string, unknown>, prettifyName(key)))
       }
     }
   }
@@ -485,6 +478,26 @@ function stripMarkdown(text: string): string {
     .replace(/^---+$/gm, '')                 // horizontal rules
     .replace(/\n{3,}/g, '\n\n')              // collapse excess newlines
     .trim()
+}
+
+/** Render a nested object as readable key-value markdown lines. */
+function renderObject(obj: Record<string, unknown>, heading?: string): string {
+  const lines: string[] = []
+  if (heading) lines.push(`**${heading}**:`)
+  for (const [key, val] of Object.entries(obj)) {
+    if (val === null || val === undefined) continue
+    if (typeof val === 'string' && val.trim()) {
+      lines.push(`**${prettifyName(key)}**: ${val.trim()}`)
+    } else if (typeof val === 'number' || typeof val === 'boolean') {
+      lines.push(`**${prettifyName(key)}**: ${val}`)
+    } else if (Array.isArray(val) && val.length > 0) {
+      const items = val.map((v) => typeof v === 'string' ? v : JSON.stringify(v))
+      lines.push(`**${prettifyName(key)}**:\n${items.map((i) => `  • ${i}`).join('\n')}`)
+    } else if (typeof val === 'object') {
+      lines.push(renderObject(val as Record<string, unknown>, prettifyName(key)))
+    }
+  }
+  return lines.join('\n')
 }
 
 /** Replace standalone snake_case identifiers with Title Case. */

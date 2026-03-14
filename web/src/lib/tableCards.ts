@@ -148,16 +148,9 @@ function addSectionSpacing(html: string): string {
  */
 function highlightTickers(html: string): string {
   return html.replace(/>([^<]+)</g, (_full, text: string) => {
-    const highlighted = text
-      // Primary: $TICKER
-      .replace(/\$([A-Z]{1,5})\b/g, (_m, t: string) =>
-        `<span class="ticker">$${t}</span>`)
-      // Fallback: (TICKER) — bare ticker in parentheses (very common LLM pattern)
-      .replace(/\(([A-Z]{1,5})\)/g, (_m, t: string) => {
-        // Skip if already styled (would have $ prefix)
-        if (_m.includes('class="ticker"')) return _m
-        return `(<span class="ticker">$${t}</span>)`
-      })
+    // Only match explicit $TICKER — the $ prefix is the signal
+    const highlighted = text.replace(/\$([A-Z]{1,5})\b/g, (_m, t: string) =>
+      `<span class="ticker">$${t}</span>`)
     return `>${highlighted}<`
   })
 }

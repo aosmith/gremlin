@@ -64,7 +64,7 @@
       if (aiRec?.modeAssignments?.[mode.id]) {
         recMap = aiRec.modeAssignments[mode.id]
       } else if (installedModels.length > 0) {
-        const modeRec = computeRecommendation(hw, installedModels, agents)
+        const modeRec = computeRecommendation(hw, installedModels, agents, store.settings.runMode)
         recMap = modeRec.assignments
       } else {
         recMap = {}
@@ -110,7 +110,7 @@
       // Compute scored recommendation as baseline/fallback
       const agents = agentsForMode('general')
       if (models.length > 0 && agents.length > 0) {
-        recommendation = computeRecommendation(hardware, models, agents)
+        recommendation = computeRecommendation(hardware, models, agents, store.settings.runMode)
       }
       suggested = suggestModelsForHardware(hardware, models)
 
@@ -129,6 +129,7 @@
             LOCAL_ROUTER_MODEL,
             (p) => { aiProgress = p.progress; aiProgressText = p.text },
             (status) => { aiStatus = status },
+            store.settings.runMode,
           )
           if (result) {
             aiRecommendation = result
@@ -167,7 +168,7 @@
       suggested = hardware ? suggestModelsForHardware(hardware, models) : []
       // Recompute recommendation
       if (hardware && models.length > 0) {
-        recommendation = computeRecommendation(hardware, models, agentsForMode('general'))
+        recommendation = computeRecommendation(hardware, models, agentsForMode('general'), store.settings.runMode)
       }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
