@@ -98,6 +98,25 @@ a:hover { text-decoration: underline; }
 }
 .btn.primary:hover { background: #4cc55e; }
 
+/* ── Screenshot ───────────────────────────────────────── */
+.screenshot {
+  margin: 48px 0 0;
+  padding: 10px;
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-xl);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.32), 0 4px 12px rgba(0,0,0,0.34);
+}
+.screenshot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--glass-border);
+}
+
 /* ── Hero ─────────────────────────────────────────────── */
 .hero { padding: 80px 0 48px; }
 h1 {
@@ -233,6 +252,10 @@ footer {
       <a class="btn primary" href="#install">Get started</a>
       <a class="btn" href="https://github.com/aosmith/gremlin">GitHub →</a>
     </div>
+
+    <figure class="screenshot">
+      <img src="gremlin.png" alt="Screenshot of Gremlin: agent sidebar on the left with CEO, Researcher, Analyst, Critic, Writer, Editor, and Chief of Staff; mode tabs across the top; Activity Monitor on the right." loading="lazy" />
+    </figure>
   </div>
 </header>
 
