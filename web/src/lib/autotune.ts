@@ -3,7 +3,7 @@
  * Includes AI-powered recommendations via in-browser WebLLM.
  */
 
-import type { AgentConfig, LLMProviderConfig, RunMode } from './types'
+import type { AgentConfig, LLMProviderConfig } from './types'
 import { BUILTIN_MODES, PROVIDERS, agentsForMode } from './types'
 import { isWebGPUAvailable, callWebLLM } from './webllm'
 import type { ProgressCallback } from './webllm'
@@ -91,9 +91,9 @@ export interface SuggestedModel {
 
 type AgentRoleClass = 'orchestrator' | 'code' | 'reasoning' | 'research' | 'synthesis' | 'general'
 
-const CODE_KEYWORDS = ['Dev', 'Eng', 'QA', 'DevOps', 'Security Eng', 'Simplicity', 'coder']
-const REASONING_KEYWORDS = ['Analyst', 'Critic', 'Risk', 'Probability', 'Arbitrage', 'Quality', 'Internist', 'Radiologist', 'Lab Medicine']
-const RESEARCH_KEYWORDS = ['Researcher', 'News', 'Filings', 'Sector', 'Whale', 'Pharmacist', 'Supply Chain', 'Commercial']
+const CODE_KEYWORDS = ['Dev', 'Eng', 'QA', 'DevOps', 'Security Eng', 'Simplicity', 'coder', '3D Designer']
+const REASONING_KEYWORDS = ['Analyst', 'Critic', 'Risk', 'Probability', 'Arbitrage', 'Quality', 'Internist', 'Radiologist', 'Lab Medicine', 'Systems Designer', 'Technical Designer', 'Playtest']
+const RESEARCH_KEYWORDS = ['Researcher', 'News', 'Filings', 'Sector', 'Whale', 'Pharmacist', 'Supply Chain', 'Commercial', 'Architect']
 
 export function classifyAgentRole(agent: AgentConfig): AgentRoleClass {
   if (agent.role === 'orchestrator') return 'orchestrator'
@@ -131,11 +131,13 @@ function parseModelFamily(name: string): { family: string; parameterSize: string
 const MODEL_CAPABILITIES: Record<string, Record<AgentRoleClass, number>> = {
   'qwen3':         { orchestrator: 95, code: 70, reasoning: 75, research: 70, synthesis: 75, general: 85 },
   'qwen2.5-coder': { orchestrator: 50, code: 95, reasoning: 55, research: 40, synthesis: 50, general: 55 },
+  'qwen2.5':       { orchestrator: 60, code: 75, reasoning: 80, research: 65, synthesis: 65, general: 85 },
   'deepseek-r1':   { orchestrator: 55, code: 65, reasoning: 95, research: 65, synthesis: 80, general: 70 },
   'command-r':     { orchestrator: 50, code: 35, reasoning: 60, research: 95, synthesis: 55, general: 60 },
   'qwq':           { orchestrator: 55, code: 55, reasoning: 88, research: 55, synthesis: 95, general: 65 },
   'mistral-small': { orchestrator: 65, code: 60, reasoning: 55, research: 60, synthesis: 50, general: 80 },
   'llama3':        { orchestrator: 70, code: 65, reasoning: 70, research: 70, synthesis: 70, general: 80 },
+  'gemma3':        { orchestrator: 55, code: 65, reasoning: 65, research: 60, synthesis: 60, general: 90 },
   'gemma':         { orchestrator: 60, code: 70, reasoning: 65, research: 55, synthesis: 55, general: 70 },
   'phi':           { orchestrator: 55, code: 75, reasoning: 60, research: 45, synthesis: 50, general: 65 },
 }
@@ -168,10 +170,12 @@ const IDEAL_FAMILIES: Record<AgentRoleClass, string> = {
 const IDEAL_MODELS: Record<string, string> = {
   'qwen3': 'qwen3:30b',
   'qwen2.5-coder': 'qwen2.5-coder:32b',
+  'qwen2.5': 'qwen2.5:32b',
   'deepseek-r1': 'deepseek-r1:32b',
   'command-r': 'command-r:35b',
   'qwq': 'qwq:32b',
   'mistral-small': 'mistral-small:24b',
+  'gemma3': 'gemma3:27b',
 }
 
 // ── Recommendation engine ──────────────────────────────────────────────────────
@@ -180,13 +184,10 @@ export function computeRecommendation(
   hardware: HardwareProfile,
   models: InstalledModel[],
   agents: AgentConfig[],
-  runMode: RunMode = 'intense',
 ): TuneRecommendation {
   // Reserve ~15% of GPU memory for KV cache + OS overhead.
-  // Fast mode: budget for 2 concurrent models (each gets half the VRAM).
-  // Intense mode: budget for 1 big model (full VRAM).
   const totalUsable = Math.floor(hardware.gpuMemoryGB * 0.85)
-  const perModelBudget = runMode === 'fast' ? Math.floor(totalUsable / 2) : totalUsable
+  const perModelBudget = totalUsable
   const fittingModels = models.filter(m => m.sizeGB <= perModelBudget)
   const warnings: TuneWarning[] = []
 
@@ -205,13 +206,9 @@ export function computeRecommendation(
   const agentRoles = agents.map(a => ({ agent: a, role: classifyAgentRole(a) }))
   const uniqueRoles = [...new Set(agentRoles.map(ar => ar.role))]
 
-  // Pick strategy — fast mode prefers dual-model for concurrent loading
+  // Pick strategy based on available VRAM
   let strategy: TuneRecommendation['strategy']
-  if (runMode === 'fast') {
-    // Fast: try to fit 2 smaller models concurrently in total VRAM
-    const canDual = findBestDualModels(fittingModels, uniqueRoles, totalUsable)
-    strategy = canDual ? 'dual-model' : 'single-model'
-  } else if (totalUsable < 18) {
+  if (totalUsable < 18) {
     strategy = 'single-model'
   } else if (totalUsable < 32) {
     const canDual = findBestDualModels(fittingModels, uniqueRoles, totalUsable)
@@ -240,7 +237,7 @@ export function computeRecommendation(
     for (const ar of agentRoles) {
       assignments[ar.agent.id] = globalModel
     }
-    reasoning = `Single model strategy: ${globalModel} (avg score ${bestAvg.toFixed(0)} across ${uniqueRoles.length} roles). VRAM budget: ${usableVRAM.toFixed(1)}GB.`
+    reasoning = `Single model strategy: ${globalModel} (avg score ${bestAvg.toFixed(0)} across ${uniqueRoles.length} roles). VRAM budget: ${totalUsable.toFixed(1)}GB.`
 
     // Warn about roles where the chosen model is weak (< 60)
     const caps = getCapabilities(bestModel.family)
@@ -255,7 +252,7 @@ export function computeRecommendation(
       }
     }
   } else if (strategy === 'dual-model') {
-    const dual = findBestDualModels(fittingModels, uniqueRoles, usableVRAM)!
+    const dual = findBestDualModels(fittingModels, uniqueRoles, totalUsable)!
     const [m1, m2] = dual
     const caps1 = getCapabilities(m1.family)
     const caps2 = getCapabilities(m2.family)
@@ -265,7 +262,7 @@ export function computeRecommendation(
       assignments[ar.agent.id] = caps1[ar.role] >= caps2[ar.role] ? m1.name : m2.name
     }
     globalModel = caps1['general'] >= caps2['general'] ? m1.name : m2.name
-    reasoning = `Dual model strategy: ${m1.name} + ${m2.name} (combined ${(m1.sizeGB + m2.sizeGB).toFixed(1)}GB, budget ${usableVRAM.toFixed(1)}GB).`
+    reasoning = `Dual model strategy: ${m1.name} + ${m2.name} (combined ${(m1.sizeGB + m2.sizeGB).toFixed(1)}GB, budget ${totalUsable.toFixed(1)}GB).`
   } else {
     // Multi-model: assign best model per role
     const bestPerRole: Record<string, InstalledModel> = {}
@@ -287,7 +284,7 @@ export function computeRecommendation(
     // Global = best general model
     globalModel = bestPerRole['general']?.name || fittingModels[0].name
     const modelList = [...new Set(Object.values(bestPerRole).map(m => m.name))].join(', ')
-    reasoning = `Multi-model strategy using ${modelList}. Each role gets its best-scoring model. VRAM budget: ${usableVRAM.toFixed(1)}GB.`
+    reasoning = `Multi-model strategy using ${modelList}. Each role gets its best-scoring model. VRAM budget: ${totalUsable.toFixed(1)}GB.`
   }
 
   // Check for ideal model families not installed
@@ -424,6 +421,8 @@ const MODEL_DESCRIPTIONS: Record<string, string> = {
   'qwq': 'Purpose-built for reasoning and synthesis. Excellent at combining multiple inputs into coherent summaries. Best synthesizer available.',
   'mistral-small': 'Fast, efficient general model (14GB at 24b). Best native JSON/tool calling. Good for manufacturing, operations, networking, editing tasks.',
   'llama3': 'Strong general-purpose model from Meta. Balanced across all tasks. Good default when no specialist needed.',
+  'gemma3': 'Google Gemma 3. Best-in-class creative writing and visual description. Multimodal training gives rich vocabulary for art direction, narrative, and worldbuilding. 128K context.',
+  'qwen2.5': 'Dense 32B general-purpose model. Strong balanced reasoning and language. Good for design roles needing both analytical and creative thinking.',
   'gemma': 'Google model, good at coding and general tasks. Compact and efficient.',
   'phi': 'Microsoft model, strong at coding and reasoning for its size. Very efficient.',
 }
@@ -448,7 +447,6 @@ export async function computeAIRecommendation(
   localModel: string,
   onProgress?: ProgressCallback,
   onStatus?: (status: string) => void,
-  runMode: RunMode = 'intense',
 ): Promise<AIRecommendation | null> {
   if (!isWebGPUAvailable()) return null
   if (models.length === 0 && cloudProviders.length === 0) return null
@@ -457,22 +455,52 @@ export async function computeAIRecommendation(
   const totalUsable = Math.floor(hardware.gpuMemoryGB * 0.85)
   const usableVRAM = totalUsable
 
-  // Gather all agents from all builtin modes
-  const modeAgents: { mode: string; modeName: string; agents: { id: string; name: string; role: string; roleClass: AgentRoleClass }[] }[] = []
-  for (const mode of BUILTIN_MODES) {
-    if (mode.id === 'tuning') continue
-    const agents = agentsForMode(mode.id)
+  // Gather all agents from all modes (builtin + custom)
+  interface ModeAgentInfo {
+    mode: string
+    modeName: string
+    modeDescription: string
+    agents: { id: string; name: string; role: string; roleClass: AgentRoleClass; specialty: string; needsTools: boolean; needsBrowser: boolean }[]
+  }
+  const modeAgents: ModeAgentInfo[] = []
+
+  // Load custom modes from localStorage
+  let customModes: Array<{ id: string; name: string; description: string; agents: AgentConfig[] }> = []
+  try {
+    const raw = localStorage.getItem('gremlin_custom_modes')
+    if (raw) customModes = JSON.parse(raw)
+  } catch { /* ignore */ }
+
+  const allModes = [
+    ...BUILTIN_MODES.filter(m => m.id !== 'tuning'),
+    ...customModes.map(m => ({ id: m.id, name: m.name, description: m.description })),
+  ]
+
+  for (const mode of allModes) {
+    const agents = agentsForMode(mode.id as any, customModes as any)
     if (agents.length === 0) continue
     modeAgents.push({
       mode: mode.id,
       modeName: mode.name,
       modeDescription: mode.description,
-      agents: agents.map(a => ({
-        id: a.id,
-        name: a.name,
-        role: a.role,
-        roleClass: classifyAgentRole(a),
-      })),
+      agents: agents.map(a => {
+        // Extract first 2 sentences of system prompt as specialty description
+        const promptClean = a.systemPrompt.replace(/<[^>]+>/g, '').replace(/\n+/g, ' ')
+        const sentences = promptClean.match(/[^.!?]+[.!?]+/g) || [promptClean.slice(0, 150)]
+        const specialty = sentences.slice(0, 2).join(' ').trim().slice(0, 200)
+        // Detect tool requirements from prompt content
+        const needsTools = /web_fetch|web_search|tool_call|browse_/.test(a.systemPrompt)
+        const needsBrowser = /browse_navigate|browse_content|browse_click|Playwright|headless/.test(a.systemPrompt)
+        return {
+          id: a.id,
+          name: a.name,
+          role: a.role,
+          roleClass: classifyAgentRole(a),
+          specialty,
+          needsTools,
+          needsBrowser,
+        }
+      }),
     })
   }
 
@@ -499,9 +527,17 @@ export async function computeAIRecommendation(
 
   if (allAvailableModels.size === 0) return null
 
-  // Build agent summary per mode
+  // Build agent summary per mode — include specialty and tool needs
   const modeInfo = modeAgents.map(m => {
-    const agentList = m.agents.map(a => `  - ${a.id} "${a.name}" [${a.role}] → role_class: ${a.roleClass}`).join('\n')
+    const agentList = m.agents.map(a => {
+      let line = `  - ${a.id} "${a.name}" [${a.role}] → role_class: ${a.roleClass}`
+      if (a.specialty) line += `\n    Specialty: ${a.specialty}`
+      const flags: string[] = []
+      if (a.needsTools) flags.push('tool_calling')
+      if (a.needsBrowser) flags.push('browser_tools')
+      if (flags.length) line += `\n    Requires: ${flags.join(', ')}`
+      return line
+    }).join('\n')
     return `MODE: ${m.modeName} (${m.mode}) — ${m.modeDescription}\n${agentList}`
   }).join('\n\n')
 
@@ -529,32 +565,34 @@ HOW OLLAMA USES MEMORY:
 - If weights + KV cache exceed GPU VRAM, Ollama offloads layers to CPU. Each offloaded layer is 5-10x SLOWER.
 - CRITICAL: A model that fits fully in GPU with room for KV cache will be dramatically faster than a larger model with layers spilled to CPU. ALWAYS prefer a model that fits cleanly over a bigger one that spills.
 
-RUN MODE: ${runMode === 'fast' ? 'FAST — Budget for 2 smaller models loaded concurrently (each ≤ ' + Math.floor(totalUsable / 2) + 'GB). This eliminates model swap delays between agents. Prefer smaller, faster models. Total VRAM: ' + totalUsable + 'GB.' : 'INTENSE — Budget for 1 large model using full VRAM (' + totalUsable + 'GB). Maximize model quality. Swapping between models is acceptable.'}
+VRAM BUDGET: ${totalUsable}GB usable. Ollama loads ONE model at a time. Swapping takes 10-30s but quality matters more than speed. Use the largest, most capable model that fits.
 
 CONSTRAINTS:
-- ${runMode === 'fast' ? 'FAST MODE: Pick 2 models that fit concurrently (combined ≤ ' + totalUsable + 'GB, each ≤ ' + Math.floor(totalUsable / 2) + 'GB). This eliminates 10-30s swap delays. Prefer fast architectures (MoE, smaller param counts).' : 'INTENSE MODE: Ollama loads ONE model at a time. Swapping takes 10-30s but quality matters more than speed. Use the largest, most capable model that fits.'}
+- Ollama loads ONE model at a time. Swapping takes 10-30s but quality matters more than speed. Use the largest, most capable model that fits.
 - Cloud models have NO VRAM cost and support unlimited parallel calls.
 - If both local and cloud are available, prefer cloud for quality-critical roles (reasoning, synthesis) and local for latency-sensitive roles (orchestrator).
+- Agents marked "Requires: tool_calling" MUST use a model with strong tool/function calling support (qwen3, mistral-small, command-r are best; deepseek-r1 and qwq are weaker at tool calling).
+- Agents marked "Requires: browser_tools" need reliable tool calling AND long context for page content.
 
 AVAILABLE MODELS:
 ${modelSection}
-ROLE CLASSES & SPEED NEEDS:
-- orchestrator: Delegates tasks, reads reports, outputs JSON with messages. Runs EVERY round — SPEED IS CRITICAL. Prefer fast models (MoE like qwen3 is fast despite large param counts due to low active params).
-- code: Writes/edits code. Needs strong code generation. Moderate speed.
-- reasoning: Deep analysis, risk assessment, diagnostics. Needs chain-of-thought. QUALITY > speed.
-- research: Web research, document analysis, citations. Needs RAG/citation ability. Moderate speed.
-- synthesis: Combines multiple inputs into final report. Runs once at end. QUALITY > speed.
-- general: Miscellaneous tasks. Needs balanced capabilities. Moderate speed.
+ROLE CLASSES & REQUIREMENTS:
+- orchestrator: Delegates tasks, reads reports, outputs JSON. Runs EVERY round — SPEED IS CRITICAL. Must have strong JSON/tool calling. Prefer fast models (MoE like qwen3 is fast despite large param counts due to low active params).
+- code: Writes/edits code, file system operations. Needs strong code generation + tool calling for file ops. Moderate speed.
+- reasoning: Deep analysis, risk assessment, diagnostics, valuation. Often needs tool calling for web_fetch (data endpoints). Needs chain-of-thought. QUALITY > speed.
+- research: Web research via web_fetch/web_search, document analysis, SEC filings, citations. MUST have strong tool calling. Needs RAG/citation ability. Moderate speed.
+- synthesis: Combines multiple agent inputs into final report. May use web_fetch to verify data. Runs once at end. QUALITY > speed.
+- general: Miscellaneous tasks — editing, formatting, general analysis. Needs balanced capabilities. Moderate speed.
 
 AGENTS BY MODE:
 ${modeInfo}
 
 RULES:
-1. ${runMode === 'fast' ? `Each local model MUST be ≤ ${Math.floor(totalUsable / 2)}GB so 2 can be loaded concurrently` : `Model weight size MUST be ≤ ${totalUsable}GB — reject any model that exceeds this`}
+1. Model weight size MUST be ≤ ${totalUsable}GB — reject any model that exceeds this
 2. Among models that fit, prefer the best-matched specialist for each role class
 3. Orchestrators need SPEED — prefer fast architectures (MoE, smaller models) over raw size
-4. ${runMode === 'fast' ? 'Prefer SPEED over quality — use smaller, faster models' : 'For reasoning/synthesis roles, prefer the most capable model that fits within budget'}
-5. ${runMode === 'fast' ? 'Use exactly 2 local models (dual-model strategy) to eliminate swap overhead' : 'Minimize distinct LOCAL models per mode (ideally 1-2) to reduce swap overhead'}
+4. For reasoning/synthesis roles, prefer the most capable model that fits within budget
+5. Minimize distinct LOCAL models per mode (ideally 1-2) to reduce swap overhead
 6. Cloud models can be used freely — no VRAM cost, no swap penalty
 7. Every agent MUST get a model assignment — use EXACT model names from the lists above
 8. Pick ONE global default model (the best all-rounder that fits the memory budget)

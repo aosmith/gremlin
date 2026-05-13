@@ -67,21 +67,21 @@
         {agent.status === 'stopping' ? 'Stopping…' : agent.status[0].toUpperCase() + agent.status.slice(1)}
         {#if agent.status === 'running' && elapsed}<span class="elapsed">{elapsed}</span>{/if}
       </span>
-      {#if agent.status === 'running' && onstop}
-        <button
-          class="btn-stop"
-          onclick={(e) => { e.stopPropagation(); onstop() }}
-          title="Stop this agent"
-        >Stop</button>
-      {/if}
-      {#if agent.status === 'error' && onretry}
-        <button
-          class="btn-retry"
-          onclick={(e) => { e.stopPropagation(); onretry() }}
-          title="Retry this agent"
-        >Retry</button>
-      {/if}
     </div>
+    {#if agent.status === 'running' && onstop}
+      <button
+        class="btn-stop"
+        onclick={(e) => { e.stopPropagation(); onstop() }}
+        title="Stop this agent"
+      >Stop</button>
+    {/if}
+    {#if agent.status === 'error' && onretry}
+      <button
+        class="btn-retry"
+        onclick={(e) => { e.stopPropagation(); onretry() }}
+        title="Retry this agent"
+      >Retry</button>
+    {/if}
     <div class="stats mono">
       {#if agent.model}
         <span class="model-badge" title="Model override: {agent.model}">⬡ {agent.model}</span>
@@ -108,6 +108,7 @@
     transition: all var(--t-fast);
     overflow: hidden;
     user-select: none;
+    flex-shrink: 0;
   }
   .card:hover {
     background: var(--glass-light);
@@ -132,11 +133,11 @@
 
   .body {
     flex: 1;
-    padding: 9px 9px 9px 11px;
+    padding: 6px 8px 6px 10px;
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
   }
 
   .top {
@@ -174,8 +175,18 @@
     font-size: 10px;
   }
   .status { margin-left: auto; font-size: 11px; white-space: nowrap; }
-  .meta :global(.btn-stop),
-  .meta :global(.btn-retry) { margin-left: auto; }
+  .btn-stop, .btn-retry {
+    align-self: flex-end;
+    font-size: 11px;
+    padding: 2px 10px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    border: 1px solid var(--glass-border);
+    background: var(--glass);
+    color: var(--color-text-2);
+  }
+  .btn-stop:hover { background: var(--glass-light); }
+  .btn-retry:hover { background: var(--glass-light); }
   .status.idle    { color: var(--color-text-4); }
   .status.running { color: var(--color-accent-warn); }
   .status.waiting { color: var(--color-accent-2); }
@@ -206,7 +217,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 120px;
+    max-width: 100px;
   }
 
   .metric {

@@ -423,6 +423,20 @@
         <summary>Advanced</summary>
         <div class="advanced-body">
           <div class="field">
+            <label for="ctx-length">Context Length</label>
+            <select id="ctx-length" bind:value={draft.contextLength}>
+              <option value={0}>Auto (detect from GPU)</option>
+              <option value={2048}>2K — minimal</option>
+              <option value={4096}>4K — small models</option>
+              <option value={8192}>8K — standard</option>
+              <option value={16384}>16K — recommended</option>
+              <option value={32768}>32K — large context</option>
+              <option value={65536}>64K — very large</option>
+              <option value={131072}>128K — maximum</option>
+            </select>
+            <small>Context window sent to Ollama (num_ctx). Larger = more memory, slower. 16K is recommended for most setups.</small>
+          </div>
+          <div class="field">
             <label for="max-rounds">Max Rounds</label>
             <input id="max-rounds" type="number" bind:value={draft.maxRounds} min="1" max="20" />
             <small>Max conversation rounds per session (default 8).</small>

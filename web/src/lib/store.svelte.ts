@@ -3,7 +3,7 @@ import type { AgentConfig, AgentState, AppMode, Attachment, CustomMode, Message,
 import { DEFAULT_SETTINGS } from './types'
 import { AgentRunner } from './agentRunner'
 import type { RunnerCallbacks } from './agentRunner'
-import { unloadOllamaModels, callLLM } from './api'
+import { unloadOllamaModels, callLLM, setContextLength } from './api'
 import { projectFS } from './filesystem'
 import { DEV_TOOLS, SEARCH_TOOLS, BROWSER_TOOLS } from './tools'
 import { isWebGPUAvailable } from './webllm'
@@ -45,6 +45,10 @@ function loadSettings(): Settings  {
     s.webllmEnabled = false
     localStorage.setItem('gremlin_webllm_migrated', '1')
   }
+  // Migrate: if global model is a :latest tag, clear it so agents use their per-agent models
+  if (s.model && s.model.endsWith(':latest')) s.model = ''
+  // Apply context length on load
+  setContextLength(s.contextLength ?? 0)
   return s
 }
 function saveSettings(s: Settings) { lsSet('gremlin_settings', s) }
@@ -59,7 +63,7 @@ function saveMode(m: AppMode) { lsSet('gremlin_mode', m) }
 // ── Builtin preset versioning ────────────────────────────────────────────────
 // Bump this whenever builtin mode agents are updated. On load, new agents that
 // don't exist in the user's saved config are merged in — but user edits are preserved.
-const BUILTIN_AGENTS_VERSION = 14
+const BUILTIN_AGENTS_VERSION = 15
 const VERSION_KEY = 'gremlin_builtin_agents_version'
 
 function migrateBuiltinAgents() {
@@ -284,6 +288,14 @@ class GremlinStore {
   runner: AgentRunner | null = null
   private saveTimer: ReturnType<typeof setTimeout> | null = null
 
+  /** True if at least one usable model is configured (global, per-agent, or via llmProviders). */
+  get hasModel(): boolean {
+    if (this.settings.model?.trim()) return true
+    if (this.settings.llmProviders?.some((p) => p.model?.trim())) return true
+    if (this.agentConfigs.some((a) => a.model?.trim())) return true
+    return false
+  }
+
   // ── Sleep/wake detector ────────────────────────────────────────────────
   // A heartbeat interval fires every 5s. If the gap between ticks exceeds
   // 15s the machine was likely asleep — abort any stale run since TCP
@@ -339,13 +351,6 @@ class GremlinStore {
 
   get currentModeInfo(): ModeInfo {
     return this.allModes.find((m) => m.id === this.appMode) ?? BUILTIN_MODES[0]
-  }
-
-  /** Settings with runMode overrides applied (caps maxRounds in fast mode). */
-  get effectiveSettings(): Settings {
-    const s = this.settings
-    if (s.runMode === 'fast') return { ...s, maxRounds: Math.min(s.maxRounds, 8) }
-    return s
   }
 
   switchMode(mode: AppMode) {
@@ -405,6 +410,7 @@ class GremlinStore {
   updateSettings(patch: Partial<Settings>) {
     this.settings = { ...this.settings, ...patch }
     saveSettings(this.settings)
+    setContextLength(this.settings.contextLength)
   }
 
   // ── Agent config helpers ──────────────────────────────────────────────────
@@ -787,13 +793,13 @@ class GremlinStore {
     this.runner          = new AgentRunner()
 
     const tools = [
-      ...(this.appMode === 'engineering' && projectFS.isOpen ? DEV_TOOLS : []),
+      ...((this.appMode === 'engineering' || this.appMode === 'algotrading') && projectFS.isOpen ? DEV_TOOLS : []),
       ...(this.settings.searchProviders?.length ? SEARCH_TOOLS : []),
       ...(this.settings.browserTools ? BROWSER_TOOLS : []),
     ]
 
     try {
-      await this.runner.run(this.task, this.agentConfigs, this.effectiveSettings, this.attachments, this.makeCallbacks(), tools)
+      await this.runner.run(this.task, this.agentConfigs, this.settings, this.attachments, this.makeCallbacks(), tools, this.appMode)
     } catch (err) {
       // onDone is guaranteed to be called by runner.run()'s finally block,
       // so just log the error here — cleanup is already handled.
@@ -803,18 +809,29 @@ class GremlinStore {
   }
 
   stopRun() {
-    this.runner?.abort()
-    this.runner = null
-    this.isRunning = false
-    coord.setRunning(false)
-    // Sync from coordinator then force remaining active agents to idle
-    this.syncAgentStates()
+    // Transition active agents to 'stopping' first for visual feedback
     this.agentStates = this.agentStates.map((a) =>
-      a.status !== 'idle' && a.status !== 'done'
-        ? { ...a, status: 'idle' as const }
+      a.status === 'running' || a.status === 'waiting'
+        ? { ...a, status: 'stopping' as const }
         : a
     )
-    this.flushSession()
+
+    this.runner?.abort()
+
+    // Short delay to let abort propagate, then clean up
+    setTimeout(() => {
+      this.runner = null
+      this.isRunning = false
+      coord.setRunning(false)
+      this.syncAgentStates()
+      this.agentStates = this.agentStates.map((a) =>
+        a.status !== 'idle' && a.status !== 'done' && a.status !== 'error'
+          ? { ...a, status: 'idle' as const }
+          : a
+      )
+      this.flushSession()
+    }, 500)
+
     // Release models immediately to cancel any in-flight Ollama generation
     this.releaseModels()
   }
@@ -829,22 +846,30 @@ class GremlinStore {
   async preparePrint() {
     this.preparingPrint = true
     try {
-      // Generate agent descriptions if not cached
-      const agentIds = this.agentConfigs.map(a => a.id).sort().join(',')
-      const cacheKey = `gremlin_agent_descs_${agentIds}`
+      // Generate agent descriptions from what they actually did in this session
+      const sessionId = this.restoredSessionId || Date.now().toString()
+      const cacheKey = `gremlin_agent_descs_${sessionId}`
       const cached = ls<Record<string, string>>(cacheKey, {})
-      if (Object.keys(cached).length === this.agentConfigs.length) {
+      if (Object.keys(cached).length >= this.agentConfigs.length) {
         this.agentDescriptions = cached
       } else {
         const agentList = this.agentConfigs
-          .map(a => `- ${a.id}: "${a.name}" (${a.role})\n  System prompt: ${a.systemPrompt.slice(0, 500)}`)
+          .map(a => {
+            // Include their actual messages from this session for context
+            const msgs = this.messages
+              .filter(m => m.fromAgent === a.id && m.type !== 'system')
+              .slice(0, 3)
+              .map(m => m.content.slice(0, 300))
+              .join('\n')
+            return `- ${a.id}: "${a.name}" (${a.role})\n  System prompt excerpt: ${a.systemPrompt.slice(0, 200)}\n  Sample output: ${msgs.slice(0, 500) || '(no output yet)'}`
+          })
           .join('\n\n')
 
         const response = await callLLM(
-          'You summarize AI agent roles for a printed report.',
+          'You write brief agent bios for a printed intelligence report. Each description should reflect what the agent actually contributed to this session, written in first person as if the agent is introducing themselves.',
           [{
             role: 'user',
-            content: `Write a one-sentence description (under 30 words) of each agent's purpose and specialty based on their system prompt. Return ONLY a JSON object mapping agent ID to description string, no markdown fences.\n\nAgents:\n${agentList}`,
+            content: `Write a one-sentence first-person introduction (under 30 words) for each agent, based on their role and what they contributed. Example: "I track whale wallets and large-position movements to identify where smart money is flowing."\n\nReturn ONLY a JSON object mapping agent ID to description string, no markdown fences.\n\nAgents:\n${agentList}`,
           }],
           this.settings,
         )
@@ -852,9 +877,11 @@ class GremlinStore {
         const start = response.indexOf('{')
         const end = response.lastIndexOf('}')
         if (start !== -1 && end > start) {
-          const descs = JSON.parse(response.slice(start, end + 1)) as Record<string, string>
-          this.agentDescriptions = descs
-          lsSet(cacheKey, descs)
+          try {
+            const descs = JSON.parse(response.slice(start, end + 1)) as Record<string, string>
+            this.agentDescriptions = descs
+            lsSet(cacheKey, descs)
+          } catch { /* parse failed, fall back to agentBrief */ }
         }
       }
 
@@ -914,15 +941,15 @@ Rules:
           this.settings,
         ),
         callLLM(
-          `You are a senior analyst writing a 1-page executive summary for a printed intelligence report. You have access to the orchestrator's coordination notes and the final synthesized output.
+          `You are a senior analyst writing a comprehensive executive summary for an intelligence report. You have access to the orchestrator's coordination notes and the final synthesized output.
 
 Rules:
-- Maximum 300 words — this MUST fit on a single printed page
+- Write 8-12 paragraphs (~2 printed pages). This is the primary deliverable that decision-makers read.
 - Start with the key finding or recommendation in bold
-- Include 3-5 bullet points covering the most important conclusions
-- End with a single-sentence bottom line or call to action
+- Cover: (1) macro environment and data, (2) strategy rationale, (3) top convictions with specific numbers, (4) sector/category positioning, (5) key risks and mitigants, (6) contrarian views, (7) actionable next steps
 - Professional, authoritative tone — no hedging, no disclaimers
-- Use markdown: bold for emphasis, bullet points for structure
+- Use markdown: bold for emphasis, bullet points where appropriate, ### subheadings for sections
+- Cite specific numbers, prices, and data points throughout — do not be vague
 - Do NOT add information that isn't in the source material`,
           [{
             role: 'user',
@@ -968,6 +995,7 @@ Rules:
       content: text,
       timestamp: Date.now(),
       type: 'human',
+      round: 0,
     }
     this.addMessage(msg)
 
@@ -984,13 +1012,13 @@ Rules:
     this.runner          = new AgentRunner()
 
     const tools = [
-      ...(this.appMode === 'engineering' && projectFS.isOpen ? DEV_TOOLS : []),
+      ...((this.appMode === 'engineering' || this.appMode === 'algotrading') && projectFS.isOpen ? DEV_TOOLS : []),
       ...(this.settings.searchProviders?.length ? SEARCH_TOOLS : []),
       ...(this.settings.browserTools ? BROWSER_TOOLS : []),
     ]
 
     try {
-      await this.runner.run(this.task, this.agentConfigs, this.effectiveSettings, this.attachments, this.makeCallbacks(), tools)
+      await this.runner.run(this.task, this.agentConfigs, this.settings, this.attachments, this.makeCallbacks(), tools, this.appMode)
     } catch (err) {
       // onDone is guaranteed to be called by runner.run()'s finally block,
       // so just log the error here — cleanup is already handled.

@@ -359,7 +359,7 @@ export async function executeTool(
         break
       }
       case 'web_search': {
-        const { query } = args as { query: string }
+        let { query } = args as { query: string }
         if (!settings?.searchProviders?.length) {
           // Prompt user to configure search
           if (onSearchNotConfigured) {
@@ -370,7 +370,41 @@ export async function executeTool(
             throw new Error('Web search not configured. Set a search provider in Settings.')
           }
         }
-        result = await performWebSearch(query, settings!, signal)
+        // Auto-ground queries to the current time period if the agent didn't
+        const now = new Date()
+        const curYear = String(now.getFullYear())
+        const curMonth = now.toLocaleDateString('en-US', { month: 'long' })
+        if (!query.includes(curYear)) {
+          query = `${query} ${curMonth} ${curYear}`
+        }
+        const searchResult = await performWebSearch(query, settings!, signal)
+
+        // Auto-fetch the top 2 URLs to give agents full page content, not just snippets
+        const urlPattern = /— (https?:\/\/[^\s]+)/g
+        const urls: string[] = []
+        let urlMatch: RegExpExecArray | null
+        while ((urlMatch = urlPattern.exec(searchResult)) !== null && urls.length < 2) {
+          urls.push(urlMatch[1])
+        }
+        const fetches = await Promise.allSettled(
+          urls.map(async (u) => {
+            try {
+              const page = settings?.cloudflareAccountId && settings?.cloudflareApiToken
+                ? await cfFetchPage(u, settings, signal)
+                : await fetchWebPage(u, settings, signal)
+              // Keep first 2000 chars of each page — enough context without drowning the model
+              return `── Full content: ${u} ──\n${page.slice(0, 2000)}`
+            } catch { return null }
+          })
+        )
+        const pageTexts = fetches
+          .filter((f): f is PromiseFulfilledResult<string | null> => f.status === 'fulfilled')
+          .map(f => f.value)
+          .filter(Boolean)
+
+        result = pageTexts.length > 0
+          ? `${searchResult}\n\n${pageTexts.join('\n\n')}`
+          : searchResult
         break
       }
       case 'web_fetch': {

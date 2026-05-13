@@ -2,7 +2,8 @@
   import { store } from '../lib/store.svelte'
   import { detectHardware, detectOllamaModels, isOllamaRunning, computeRecommendation, computeAIRecommendation, classifyAgentRole, suggestModelsForHardware } from '../lib/autotune'
   import type { HardwareProfile, InstalledModel, TuneRecommendation, AIRecommendation, SuggestedModel } from '../lib/autotune'
-  import { pullOllamaModel } from '../lib/api'
+  import { pullOllamaModel, fetchOllamaLibrary } from '../lib/api'
+  import type { OllamaLibraryModel } from '../lib/api'
   import { agentsForMode, BUILTIN_MODES, LOCAL_ROUTER_MODEL } from '../lib/types'
   import type { AgentConfig } from '../lib/types'
   import { isWebGPUAvailable } from '../lib/webllm'
@@ -42,10 +43,26 @@
   /** Per-mode assignments computed for display — scored path fills this too */
   let modeAssignments = $state<ModeAssignment[]>([])
   let expandedMode = $state<string | null>(null)
+  let library = $state<OllamaLibraryModel[]>([])
+  let libraryError = $state('')
 
   const usableVRAM = $derived(hardware ? Math.floor(hardware.gpuMemoryGB * 0.85) : 0)
   const activeRec = $derived(aiRecommendation ?? recommendation)
   const totalChanges = $derived(modeAssignments.reduce((sum, m) => sum + m.changeCount, 0))
+
+  /** Recommend context length based on VRAM headroom after model weights. */
+  const recommendedCtx = $derived.by(() => {
+    if (!hardware || models.length === 0) return 8192
+    const largestModel = Math.max(...models.map(m => m.sizeGB))
+    const kvBudget = hardware.gpuMemoryGB * 0.95 - largestModel
+    if (kvBudget <= 0) return 2048
+    if (kvBudget < 1) return 4096
+    if (kvBudget < 2) return 8192
+    if (kvBudget < 4) return 16384
+    if (kvBudget < 8) return 32768
+    return 65536
+  })
+  let ctxOverride = $state(store.settings.contextLength)
 
   /** Build per-agent assignment table for all modes */
   function buildModeAssignments(
@@ -64,7 +81,7 @@
       if (aiRec?.modeAssignments?.[mode.id]) {
         recMap = aiRec.modeAssignments[mode.id]
       } else if (installedModels.length > 0) {
-        const modeRec = computeRecommendation(hw, installedModels, agents, store.settings.runMode)
+        const modeRec = computeRecommendation(hw, installedModels, agents)
         recMap = modeRec.assignments
       } else {
         recMap = {}
@@ -110,7 +127,7 @@
       // Compute scored recommendation as baseline/fallback
       const agents = agentsForMode('general')
       if (models.length > 0 && agents.length > 0) {
-        recommendation = computeRecommendation(hardware, models, agents, store.settings.runMode)
+        recommendation = computeRecommendation(hardware, models, agents)
       }
       suggested = suggestModelsForHardware(hardware, models)
 
@@ -129,7 +146,6 @@
             LOCAL_ROUTER_MODEL,
             (p) => { aiProgress = p.progress; aiProgressText = p.text },
             (status) => { aiStatus = status },
-            store.settings.runMode,
           )
           if (result) {
             aiRecommendation = result
@@ -152,6 +168,11 @@
   }
   detect()
 
+  // ── Fetch Ollama library (cached 24h) ───────────────────────────────────────
+  fetchOllamaLibrary()
+    .then((models) => { library = models })
+    .catch((e) => { libraryError = e instanceof Error ? e.message : String(e) })
+
   // ── Pull a model ────────────────────────────────────────────────────────────
   async function pullModel(name: string) {
     pullingModel = name
@@ -168,7 +189,7 @@
       suggested = hardware ? suggestModelsForHardware(hardware, models) : []
       // Recompute recommendation
       if (hardware && models.length > 0) {
-        recommendation = computeRecommendation(hardware, models, agentsForMode('general'), store.settings.runMode)
+        recommendation = computeRecommendation(hardware, models, agentsForMode('general'))
       }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
@@ -222,9 +243,12 @@
       store.switchMode('general')
       return
     }
-    // Set the global model
+    // Set the global model and context length
+    const ctx = ctxOverride > 0 ? ctxOverride : recommendedCtx
     if (rec.globalModel) {
-      store.updateSettings({ model: rec.globalModel })
+      store.updateSettings({ model: rec.globalModel, contextLength: ctx })
+    } else {
+      store.updateSettings({ contextLength: ctx })
     }
     // Apply per-agent model assignments from the computed modeAssignments
     for (const ma of modeAssignments) {
@@ -533,8 +557,67 @@
         </div>
       {/if}
 
+      <!-- Ollama Library -->
+      {#if library.length > 0}
+        {@const installedNames = new Set(models.map(m => m.name))}
+        <div class="tuning-section">
+          <div class="section-head">
+            <div>
+              <h2 class="section-title">Ollama Library</h2>
+              <p class="section-hint">All models available to pull · refreshed every 24h</p>
+            </div>
+          </div>
+          <div class="suggest-list">
+            {#each library as m}
+              {@const installed = installedNames.has(m.name)}
+              {@const tooLarge = hardware !== null && m.sizeGB > 0 && m.sizeGB > hardware.gpuMemoryGB}
+              <div class="suggest-row" class:installed>
+                <div class="suggest-info">
+                  <span class="suggest-name">{m.name}</span>
+                  {#if m.sizeGB > 0}<span class="suggest-size">{m.sizeGB} GB</span>{/if}
+                  {#if tooLarge}<span class="badge-warn size-warn">Too large</span>{/if}
+                </div>
+                {#if installed}
+                  <span class="installed-badge">Installed</span>
+                {:else if pullingModel === m.name}
+                  <span class="pull-status">{pullProgress}</span>
+                {:else}
+                  <button
+                    class="ghost btn-sm"
+                    onclick={() => pullModel(m.name)}
+                    disabled={pullingModel !== null}
+                  >Pull</button>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        </div>
+      {:else if libraryError}
+        <div class="tuning-error">Library unavailable: {libraryError}</div>
+      {/if}
+
       {#if error}
         <div class="tuning-error">{error}</div>
+      {/if}
+
+      <!-- Context Length -->
+      {#if hardware && models.length > 0}
+        <div class="tuning-section">
+          <div class="section-label">Context Length</div>
+          <div class="ctx-row">
+            <select class="ctx-select" bind:value={ctxOverride}>
+              <option value={0}>Auto ({(recommendedCtx / 1024).toFixed(0)}K recommended)</option>
+              <option value={2048}>2K — minimal</option>
+              <option value={4096}>4K — small models</option>
+              <option value={8192}>8K — standard</option>
+              <option value={16384}>16K — recommended</option>
+              <option value={32768}>32K — large context</option>
+              <option value={65536}>64K — very large</option>
+              <option value={131072}>128K — maximum</option>
+            </select>
+          </div>
+          <div class="ctx-hint">Controls how much conversation history each agent sees. Larger values use more VRAM for KV cache and slow down inference.</div>
+        </div>
       {/if}
 
       <!-- Actions -->
@@ -727,6 +810,15 @@
     background: rgba(63,185,80,0.1);
     white-space: nowrap;
   }
+  .size-warn {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
 
   /* AI badge */
   .ai-badge {
@@ -908,4 +1000,9 @@
 
   .bottom-spacer { height: 19px; flex-shrink: 0; }
   .muted { font-size: 12px; color: var(--color-text-3); }
+
+  /* ── Context length ──────────────────────────────────────────────────── */
+  .ctx-row { display: flex; gap: 8px; align-items: center; }
+  .ctx-select { flex: 1; font-size: 13px; padding: 6px 10px; }
+  .ctx-hint { font-size: 11px; color: var(--color-text-4); margin-top: 4px; }
 </style>

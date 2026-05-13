@@ -2,10 +2,33 @@
   import { AGENT_COLORS, PROVIDERS, SEARCH_PROVIDERS } from '../lib/types'
   import type { AgentConfig, AgentRole } from '../lib/types'
   import { store } from '../lib/store.svelte'
+  import { fetchOllamaModels, fetchOllamaLibrary } from '../lib/api'
 
-  // Model suggestions from the currently selected provider
-  const modelSuggestions = $derived(
+  // Model suggestions: preset list + installed Ollama models + cached library
+  const presetModels = $derived(
     PROVIDERS.find((p) => p.format === store.settings.apiFormat && p.id !== 'custom')?.models ?? []
+  )
+  let installedModels = $state<string[]>([])
+  let libraryModels = $state<string[]>([])
+
+  // Fetch installed + library models on mount
+  const endpoints = [
+    store.settings.apiEndpoint,
+    ...store.settings.llmProviders.map((p) => p.endpoint),
+  ].filter(Boolean)
+
+  for (const ep of endpoints) {
+    fetchOllamaModels(ep).then((ms) => {
+      installedModels = [...new Set([...installedModels, ...ms])].sort()
+    }).catch(() => {})
+  }
+
+  fetchOllamaLibrary().then((ms) => {
+    libraryModels = ms.map((m) => m.name)
+  }).catch(() => {})
+
+  const modelSuggestions = $derived(
+    [...new Set([...installedModels, ...presetModels, ...libraryModels])].sort()
   )
 
   interface Props {
@@ -134,19 +157,50 @@
 
       <div class="field">
         <label for="agent-model">Model <span class="optional">(override)</span></label>
-        <input
-          id="agent-model"
-          type="text"
-          list="model-suggestions"
-          bind:value={draft.model}
-          placeholder="Global: {store.settings.model}"
-        />
-        <datalist id="model-suggestions">
-          {#each modelSuggestions as m}
-            <option value={m}>{m}</option>
-          {/each}
-        </datalist>
-        <small>Leave blank to use the global model. Type any model name or pick from the list.</small>
+        {#if modelSuggestions.length > 0}
+          <select
+            id="agent-model"
+            value={draft.model || ''}
+            onchange={(e) => { draft.model = (e.target as HTMLSelectElement).value }}
+          >
+            <option value="">— default ({store.settings.model || 'global setting'}) —</option>
+            {#if installedModels.length > 0}
+              <optgroup label="Installed">
+                {#each installedModels as m}
+                  <option value={m}>{m}</option>
+                {/each}
+              </optgroup>
+            {/if}
+            {#if presetModels.filter(m => !installedModels.includes(m)).length > 0}
+              <optgroup label="Provider models">
+                {#each presetModels.filter(m => !installedModels.includes(m)) as m}
+                  <option value={m}>{m}</option>
+                {/each}
+              </optgroup>
+            {/if}
+            {#if libraryModels.filter(m => !installedModels.includes(m) && !presetModels.includes(m)).length > 0}
+              <optgroup label="Ollama library">
+                {#each libraryModels.filter(m => !installedModels.includes(m) && !presetModels.includes(m)) as m}
+                  <option value={m}>{m}</option>
+                {/each}
+              </optgroup>
+            {/if}
+          </select>
+        {:else}
+          <input
+            id="agent-model"
+            type="text"
+            bind:value={draft.model}
+            placeholder="Default: {store.settings.model || 'global setting'}"
+          />
+        {/if}
+        <small>
+          {#if installedModels.length > 0}
+            {installedModels.length} installed · {libraryModels.length} in library · leave blank for default
+          {:else}
+            Leave blank to use the global model.
+          {/if}
+        </small>
       </div>
 
       <div class="field">

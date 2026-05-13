@@ -24,6 +24,14 @@
 
   onMount(() => {
     store.initSession()
+    const onKeydown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && store.isRunning) {
+        e.preventDefault()
+        store.stopRun()
+      }
+    }
+    window.addEventListener('keydown', onKeydown)
+    return () => window.removeEventListener('keydown', onKeydown)
   })
 
   const selectedAgent = $derived(
@@ -33,7 +41,7 @@
   )
 
   const isTuning = $derived(store.appMode === 'tuning')
-  const isEngineering = $derived(store.appMode === 'engineering')
+  const isEngineering = $derived(store.appMode === 'engineering' || store.appMode === 'algotrading')
 
   // Right panel: prefer code viewer in engineering mode when a file is selected
   const showCodeViewer = $derived(isEngineering && store.selectedFile !== null)
@@ -341,7 +349,7 @@
                 store.task = (e.target as HTMLInputElement).value
                 store.saveTask()
               }}
-              onkeydown={(e) => e.key === 'Enter' && store.settings.model.trim() && runOrFollowUp()}
+              onkeydown={(e) => e.key === 'Enter' && store.hasModel && runOrFollowUp()}
               onpaste={async (e) => {
                 const items = e.clipboardData?.items
                 if (!items) return
@@ -392,7 +400,7 @@
 
       <!-- Controls -->
       <div class="nav-controls">
-        {#if !store.settings.model.trim()}
+        {#if !store.hasModel}
           <button
             class="warn btn-sm"
             onclick={() => (store.showSettings = true)}
@@ -406,26 +414,6 @@
             <button class="ghost icon btn-folder-close" onclick={() => store.closeProjectFolder()} title="Close folder">✕</button>
           </div>
         {/if}
-        {#if store.messages.length > 0 && !store.isRunning}
-          <button
-            class="ghost btn-sm"
-            onclick={() => store.exportSession()}
-            title="Export session as JSON"
-            aria-label="Export session"
-          >Export</button>
-          <button
-            class="ghost btn-sm"
-            onclick={() => store.preparePrint()}
-            title={store.generatingReport ? 'Report is being prepared…' : 'Print report'}
-            aria-label="Print report"
-          >{store.generatingReport ? 'Print…' : 'Print'}</button>
-        {/if}
-        <button
-          class="ghost btn-sm"
-          onclick={() => importInput?.click()}
-          title="Import a saved session"
-          aria-label="Import session"
-        >Import</button>
         <input
           bind:this={importInput}
           type="file"
@@ -455,28 +443,14 @@
           title="Settings"
           aria-label="Settings"
         >⚙</button>
-        <div class="run-mode-toggle" title="Fast: fewer rounds. Intense: full analysis.">
-          <button
-            class="run-mode-btn"
-            class:active={store.settings.runMode === 'fast'}
-            onclick={() => store.updateSettings({ runMode: 'fast' })}
-            disabled={store.isRunning}
-          >⚡ Fast</button>
-          <button
-            class="run-mode-btn"
-            class:active={store.settings.runMode !== 'fast'}
-            onclick={() => store.updateSettings({ runMode: 'intense' })}
-            disabled={store.isRunning}
-          >🔬 Intense</button>
-        </div>
         {#if store.isRunning}
           <button class="danger" onclick={() => store.stopRun()} aria-label="Stop run">⏹ Stop</button>
         {:else}
           <button
             class="primary run-btn"
             onclick={() => runOrFollowUp()}
-            disabled={!store.task.trim() || !store.settings.model.trim()}
-            title={!store.settings.model.trim() ? 'No model selected — open Settings' : 'Run (Enter)'}
+            disabled={!store.task.trim() || !store.hasModel}
+            title={!store.hasModel ? 'No model selected — open Settings' : 'Run (Enter)'}
           >▶ Run</button>
         {/if}
       </div>
@@ -591,10 +565,9 @@
       <div class="sidebar-foot">
         <button
           class="ghost btn-full btn-sm"
-          onclick={() => { store.resetAgents(); store.clearSession() }}
-          disabled={store.isRunning}
-          title="Restore default agents for this mode"
-        >↺ Reset agents</button>
+          onclick={() => (showHistory = true)}
+          title="View session history"
+        >🕐&ensp;History</button>
       </div>
 
 
@@ -641,8 +614,12 @@
         modeDescription={store.currentModeInfo.description}
         agentDescriptions={store.agentDescriptions}
         onCopy={copyOutput}
+        onExport={() => store.exportSession()}
+        onPrint={() => store.preparePrint()}
         onReply={handleReply}
         onRetry={(agentId) => store.retryAgent(agentId)}
+        onNewThread={() => { store.clearSession(); document.querySelector<HTMLInputElement>('.task-input')?.focus() }}
+        onResume={() => store.followUp('Continue where you left off. Pick up from the last round and complete the analysis.')}
       />
     </div>
 
@@ -843,38 +820,6 @@
   .nav-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
   .run-btn { min-width: 80px; }
 
-  .run-mode-toggle {
-    display: flex;
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius);
-    overflow: hidden;
-    flex-shrink: 0;
-  }
-  .run-mode-btn {
-    background: none;
-    border: none;
-    border-radius: 0;
-    padding: 4px 10px;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--color-text-3);
-    cursor: pointer;
-    transition: all var(--t-fast);
-    height: auto;
-    white-space: nowrap;
-  }
-  .run-mode-btn:hover:not(:disabled) {
-    color: var(--color-text);
-    background: var(--glass);
-  }
-  .run-mode-btn.active {
-    color: var(--color-accent);
-    background: var(--glass-tinted);
-  }
-  .run-mode-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .run-mode-btn + .run-mode-btn {
-    border-left: 1px solid var(--glass-border);
-  }
 
   .btn-xs { font-size: 11px; padding: 4px 10px; }
   .btn-sm { font-size: 11px; }
@@ -1054,10 +999,10 @@
   .agent-list {
     flex: 1;
     overflow-y: auto;
-    padding: 8px;
+    padding: 6px;
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: 4px;
     min-height: 0;
   }
 

@@ -25,7 +25,7 @@ function formatResults(query: string, results: SearchResult[]): string {
 // ── Brave Search ──────────────────────────────────────────────────────────────
 
 async function searchBrave(query: string, settings: Settings, signal?: AbortSignal): Promise<string> {
-  const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=8`
+  const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=8&extra_snippets=true`
   const resp = await proxiedFetch(url, {
     method: 'GET',
     headers: {
@@ -37,11 +37,12 @@ async function searchBrave(query: string, settings: Settings, signal?: AbortSign
   }, settings)
   if (!resp.ok) throw new Error(`Brave search failed: ${resp.status} ${await resp.text()}`)
   const data = await resp.json()
-  const results: SearchResult[] = (data.web?.results ?? []).map((r: any) => ({
-    title: r.title ?? '',
-    url: r.url ?? '',
-    snippet: r.description ?? '',
-  }))
+  const results: SearchResult[] = (data.web?.results ?? []).map((r: any) => {
+    // Brave returns extra_snippets array with additional context when available
+    const extras: string[] = r.extra_snippets ?? []
+    const allSnippets = [r.description ?? '', ...extras].filter(Boolean).join(' … ')
+    return { title: r.title ?? '', url: r.url ?? '', snippet: allSnippets }
+  })
   return formatResults(query, results)
 }
 
@@ -54,7 +55,7 @@ async function searchSerper(query: string, settings: Settings, signal?: AbortSig
       'Content-Type': 'application/json',
       'X-API-KEY': settings.searchApiKey,
     },
-    body: JSON.stringify({ q: query, num: 8 }),
+    body: JSON.stringify({ q: query, num: 10 }),
     signal,
   }, settings)
   if (!resp.ok) throw new Error(`Serper search failed: ${resp.status} ${await resp.text()}`)
@@ -77,17 +78,22 @@ async function searchTavily(query: string, settings: Settings, signal?: AbortSig
       api_key: settings.searchApiKey,
       query,
       max_results: 8,
+      search_depth: 'advanced',
       include_answer: false,
+      include_raw_content: true,
+      days: 7,              // Prioritize content from the last 7 days
+      topic: 'general',     // Could be 'news' for finance — general is safer default
     }),
     signal,
   }, settings)
   if (!resp.ok) throw new Error(`Tavily search failed: ${resp.status} ${await resp.text()}`)
   const data = await resp.json()
-  const results: SearchResult[] = (data.results ?? []).map((r: any) => ({
-    title: r.title ?? '',
-    url: r.url ?? '',
-    snippet: r.content ?? '',
-  }))
+  const results: SearchResult[] = (data.results ?? []).map((r: any) => {
+    // Prefer raw_content (full page text, truncated to useful length) over short snippet
+    const raw = typeof r.raw_content === 'string' ? r.raw_content.slice(0, 1500) : ''
+    const snippet = raw.length > (r.content?.length ?? 0) ? raw : (r.content ?? '')
+    return { title: r.title ?? '', url: r.url ?? '', snippet }
+  })
   return formatResults(query, results)
 }
 
@@ -167,8 +173,8 @@ const PROVIDER_FNS: Record<string, (q: string, s: Settings, sig?: AbortSignal) =
 }
 
 /**
- * Try each configured search provider in order.
- * If one fails, fall back to the next. Returns the first successful result.
+ * Race configured search providers in parallel — first successful result wins.
+ * Falls back to sequential if only one provider is configured.
  */
 export async function performWebSearch(
   query: string,
@@ -179,16 +185,38 @@ export async function performWebSearch(
     ? settings.searchProviders
     : ['duckduckgo']
 
-  const errors: string[] = []
-  for (const id of providers) {
-    const fn = PROVIDER_FNS[id]
-    if (!fn) { errors.push(`Unknown provider: ${id}`); continue }
-    try {
-      return await fn(query, settings, signal)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      errors.push(`${id}: ${msg}`)
-    }
+  const validProviders = providers.map(id => ({ id, fn: PROVIDER_FNS[id] })).filter(p => p.fn)
+
+  if (validProviders.length === 0) {
+    throw new Error(`No valid search providers configured: ${providers.join(', ')}`)
   }
-  throw new Error(`All search providers failed:\n${errors.join('\n')}`)
+
+  // Single provider — just call it directly
+  if (validProviders.length === 1) {
+    return validProviders[0].fn!(query, settings, signal)
+  }
+
+  // Multiple providers — race them. First success wins, collect errors from failures.
+  const errors: string[] = []
+  const result = await new Promise<string>((resolve, reject) => {
+    let settled = false
+    let pending = validProviders.length
+
+    for (const { id, fn } of validProviders) {
+      fn!(query, settings, signal)
+        .then((r) => {
+          if (!settled) { settled = true; resolve(r) }
+        })
+        .catch((err) => {
+          errors.push(`${id}: ${err instanceof Error ? err.message : String(err)}`)
+          pending--
+          if (pending === 0 && !settled) {
+            settled = true
+            reject(new Error(`All search providers failed:\n${errors.join('\n')}`))
+          }
+        })
+    }
+  })
+
+  return result
 }

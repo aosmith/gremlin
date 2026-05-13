@@ -51,16 +51,176 @@ function cleanVisualNoise(text: string): string {
 }
 
 
-/** Convert bare send_message("Agent", "content") calls into readable → Agent: content lines. */
-function formatSendMessageCalls(text: string): string {
-  return text.replace(
-    /send_message\(\s*"([^"]+)"\s*,\s*"((?:[^"\\]|\\.)*)"\s*\)/g,
-    (_match, agent: string, content: string) => {
-      // Unescape any escaped quotes in the content
-      const cleaned = content.replace(/\\"/g, '"').replace(/\\n/g, '\n')
-      return `→ **${agent}**: ${cleaned}`
+/** Apply all agent text formatters (sources, send_message calls, embedded tool JSON). */
+function formatAgentText(text: string): string {
+  return formatSendMessageCalls(formatSourceCitations(formatEmbeddedToolCalls(text)))
+}
+
+/**
+ * Detect raw JSON tool-call objects embedded in prose text.
+ * Models sometimes dump tool calls as text instead of using the tool-calling API.
+ * Uses proper JSON parsing (not regex) to handle arbitrarily nested content.
+ */
+function formatEmbeddedToolCalls(text: string): string {
+  // Strip common LLM preamble around tool calls
+  let cleaned = text.replace(/Here\s+is\s+a\s+JSON\s+for\s+a\s+function\s+call\s+that\s+best\s+answers\s+the\s+given\s+prompt\s*:?\s*/gi, '')
+
+  // Try to parse the entire text as a JSON array of tool calls: [{"name": "send_message", ...}, ...]
+  const trimmed = cleaned.trim()
+  if (trimmed.startsWith('[')) {
+    try {
+      const arr = JSON.parse(fixJsonNewlines(trimmed))
+      if (Array.isArray(arr) && arr.length > 0 && arr[0]?.name) {
+        return arr.map(formatToolCallObj).filter(Boolean).join('\n\n')
+      }
+    } catch { /* not a valid array, fall through */ }
+  }
+
+  // Scan for embedded JSON objects starting with {"name": and extract them
+  const parts: string[] = []
+  let pos = 0
+  while (pos < cleaned.length) {
+    // Find next potential tool-call JSON object
+    const marker = cleaned.indexOf('{"name"', pos)
+    if (marker === -1) {
+      parts.push(cleaned.slice(pos))
+      break
     }
+
+    // Keep any prose before the JSON
+    const before = cleaned.slice(pos, marker).trim()
+    if (before) parts.push(before)
+
+    // Try to extract a balanced JSON object starting at marker
+    const extracted = extractJsonObject(cleaned, marker)
+    if (extracted) {
+      try {
+        const obj = JSON.parse(fixJsonNewlines(extracted.json))
+        const formatted = formatToolCallObj(obj)
+        if (formatted) {
+          parts.push(formatted)
+          pos = extracted.end
+          continue
+        }
+      } catch { /* parse failed, treat as text */ }
+    }
+
+    // Couldn't parse — skip past this marker
+    parts.push(cleaned.slice(marker, marker + 7))
+    pos = marker + 7
+  }
+
+  return parts.join('\n\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+/** Extract a balanced JSON object from text starting at `start`. */
+function extractJsonObject(text: string, start: number): { json: string; end: number } | null {
+  if (text[start] !== '{') return null
+  let depth = 0
+  let inStr = false
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]
+    if (inStr) {
+      if (ch === '\\') { i++; continue }
+      if (ch === '"') inStr = false
+    } else {
+      if (ch === '"') inStr = true
+      else if (ch === '{') depth++
+      else if (ch === '}') { depth--; if (depth === 0) return { json: text.slice(start, i + 1), end: i + 1 } }
+    }
+  }
+  return null
+}
+
+/** Format a single tool-call JSON object into readable text. */
+function formatToolCallObj(obj: Record<string, unknown>): string | null {
+  if (!obj || typeof obj.name !== 'string') return null
+  const params = (obj.parameters ?? obj.params ?? {}) as Record<string, unknown>
+
+  if (obj.name === 'send_message') {
+    const to = String(params.to ?? '')
+    const content = String(params.content ?? '')
+    if (to && content) return `→ **${to}**: ${content}`
+  }
+  if (obj.name === 'mark_done') {
+    const result = params.result ? String(params.result) : null
+    return result ? `✔ Done: ${result}` : '✔ Done'
+  }
+  if (obj.name === 'web_search') {
+    return `Searching: ${String(params.query ?? '')}`
+  }
+  if (obj.name === 'web_fetch') {
+    return `Fetching: ${String(params.url ?? '')}`
+  }
+  if (obj.name === 'browse_navigate') {
+    return `Browsing: ${String(params.url ?? '')}`
+  }
+
+  // Generic tool call
+  const argStr = Object.entries(params).map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', ')
+  return `🔧 ${prettifyName(obj.name)}(${argStr})`
+}
+
+/**
+ * Handle batched send_message where `to` and/or `content` may be arrays.
+ * e.g. {"to": ["Agent1", "Agent2"], "content": ["msg1", "msg2"]}
+ * or {"to": "Agent1", "content": "msg1"}
+ */
+function formatBatchedSendMessage(params: Record<string, unknown>): string | null {
+  const toVal = params.to
+  const contentVal = params.content ?? params.message ?? params.text
+  if (!toVal || !contentVal) return null
+
+  const toArr = Array.isArray(toVal) ? toVal.map(String) : [String(toVal)]
+  const contentArr = Array.isArray(contentVal) ? contentVal.map(String) : [String(contentVal)]
+
+  const parts: string[] = []
+  for (let i = 0; i < toArr.length; i++) {
+    const to = toArr[i]
+    const content = contentArr[i] ?? contentArr[0] ?? ''
+    if (to && content) parts.push(`→ **${prettifyName(to)}**: ${content}`)
+  }
+  return parts.length > 0 ? parts.join('\n\n') : null
+}
+
+/** Format [source: web_search("query")] citations into clean inline references. */
+function formatSourceCitations(text: string): string {
+  return text.replace(
+    /\[source:\s*web_search\(\s*["']([^"']+)["']\s*\)\s*\]/gi,
+    '**🔍 $1** —'
   )
+}
+
+/** Convert bare send_message() calls into readable → Agent: content lines.
+ *  Handles both positional args: send_message("Agent", "content")
+ *  and keyword args: send_message(to="Agent", content="content")
+ */
+function formatSendMessageCalls(text: string): string {
+  return text
+    // Keyword args: send_message(to="Agent", content="...")
+    .replace(
+      /send_message\(\s*to\s*=\s*"([^"]+)"\s*,\s*content\s*=\s*"((?:[^"\\]|\\.)*)"\s*\)/g,
+      (_match, agent: string, content: string) => {
+        const cleaned = content.replace(/\\"/g, '"').replace(/\\n/g, '\n')
+        return `→ **${agent}**: ${cleaned}`
+      }
+    )
+    // Keyword args reversed order: send_message(content="...", to="Agent")
+    .replace(
+      /send_message\(\s*content\s*=\s*"((?:[^"\\]|\\.)*)"\s*,\s*to\s*=\s*"([^"]+)"\s*\)/g,
+      (_match, content: string, agent: string) => {
+        const cleaned = content.replace(/\\"/g, '"').replace(/\\n/g, '\n')
+        return `→ **${agent}**: ${cleaned}`
+      }
+    )
+    // Positional args: send_message("Agent", "content")
+    .replace(
+      /send_message\(\s*"([^"]+)"\s*,\s*"((?:[^"\\]|\\.)*)"\s*\)/g,
+      (_match, agent: string, content: string) => {
+        const cleaned = content.replace(/\\"/g, '"').replace(/\\n/g, '\n')
+        return `→ **${agent}**: ${cleaned}`
+      }
+    )
 }
 
 /**
@@ -72,17 +232,69 @@ export function cleanContent(raw: string): string {
   const stripped = cleanVisualNoise(raw.replace(/\[(?:From|To)\s+[^\]]+\]\s*:?\s*/gi, '').trim())
 
   const trimmed = stripped.trim()
-  if (!trimmed.startsWith('{')) return formatSendMessageCalls(stripped)
+
+  // Handle top-level arrays (e.g. raw data from agents, or arrays of tool calls)
+  if (trimmed.startsWith('[')) {
+    try {
+      const arr = JSON.parse(fixJsonNewlines(trimmed))
+      if (Array.isArray(arr) && arr.length > 0) {
+        // Check if it's an array of tool calls
+        if (arr[0]?.name && (arr[0]?.parameters || arr[0]?.params)) {
+          const formatted = arr.map(formatToolCallObj).filter(Boolean).join('\n\n')
+          if (formatted) return formatted
+        }
+        return prettifySnakeCase(arr.map((item) =>
+          typeof item === 'string' ? item
+          : typeof item === 'object' && item !== null ? renderObject(item as Record<string, unknown>)
+          : String(item)
+        ).join('\n\n'))
+      }
+    } catch { /* not valid JSON array, fall through */ }
+  }
+
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return formatAgentText(stripped)
 
   const obj = tryParseJson(trimmed)
-  if (!obj) return stripped
+  if (!obj) return formatAgentText(stripped)
+
+  // Intercept tool-call JSON objects: {"name": "send_message", "parameters": {...}}
+  if (typeof obj.name === 'string' && (obj.parameters || obj.params)) {
+    const formatted = formatToolCallObj(obj)
+    if (formatted) return formatted
+  }
+
+  // Intercept tool-call-like objects with type/function patterns
+  if (typeof obj.type === 'string' && obj.type === 'function' && typeof obj.function === 'object') {
+    const fn = obj.function as Record<string, unknown>
+    const formatted = formatToolCallObj({ name: String(fn.name ?? ''), parameters: fn.arguments ?? fn.parameters ?? {} })
+    if (formatted) return formatted
+  }
+
+  // Intercept send_message as a top-level key: {"send_message": {"to": ..., "content": ...}}
+  // or {"send_message": {"parameters": {"to": ..., "content": ...}}}
+  if (obj.send_message != null && typeof obj.send_message === 'object') {
+    const sm = obj.send_message as Record<string, unknown>
+    const params = (sm.parameters ?? sm.params ?? sm) as Record<string, unknown>
+    const formatted = formatBatchedSendMessage(params)
+    if (formatted) return formatted
+  }
+
+  // Intercept function_call wrapper: {"function_call": {"name": "send_message", "arguments": {...}}}
+  if (obj.function_call != null && typeof obj.function_call === 'object') {
+    const fc = obj.function_call as Record<string, unknown>
+    const args = typeof fc.arguments === 'string'
+      ? (() => { try { return JSON.parse(fc.arguments as string) } catch { return fc.arguments } })()
+      : (fc.arguments ?? fc.parameters ?? {})
+    const formatted = formatToolCallObj({ name: String(fc.name ?? ''), parameters: args })
+    if (formatted) return formatted
+  }
 
   const parts: string[] = []
 
   // Handle analysis — may be string or object
   if (obj.analysis != null) {
     if (typeof obj.analysis === 'string' && obj.analysis.trim()) {
-      const cleaned = formatSendMessageCalls(obj.analysis.trim())
+      const cleaned = formatAgentText(obj.analysis.trim())
       if (cleaned) parts.push(cleaned)
     } else if (typeof obj.analysis === 'object') {
       parts.push(renderObject(obj.analysis as Record<string, unknown>))
@@ -101,8 +313,13 @@ export function cleanContent(raw: string): string {
 
   if (Array.isArray(obj.messages) && obj.messages.length > 0) {
     for (const m of obj.messages) {
-      if (m.to && m.content) {
-        parts.push(`  \u2192 ${prettifyName(m.to)}: ${m.content}`)
+      // Handle various field name conventions models use
+      const to = m.to ?? m.toAgentId ?? m.toAgent ?? m.to_agent ?? m.agent ?? m.recipient ?? ''
+      const content = m.content ?? m.message ?? m.text ?? ''
+      if (to && content) {
+        // Content itself may contain embedded JSON — clean it recursively
+        const contentStr = typeof content === 'string' ? content : JSON.stringify(content)
+        parts.push(`  \u2192 ${prettifyName(String(to))}: ${cleanContent(contentStr)}`)
       }
     }
   }
@@ -113,17 +330,36 @@ export function cleanContent(raw: string): string {
     parts.push(`\u2605 Result: ${obj.result.trim()}`)
   }
 
+  // Handle tool_calls arrays (OpenAI function calling format)
+  if (Array.isArray(obj.tool_calls) && obj.tool_calls.length > 0) {
+    for (const tc of obj.tool_calls) {
+      if (tc?.function?.name) {
+        let params = tc.function.arguments ?? tc.function.parameters ?? {}
+        if (typeof params === 'string') try { params = JSON.parse(params) } catch { /* keep as string */ }
+        const formatted = formatToolCallObj({ name: tc.function.name, parameters: params })
+        if (formatted) parts.push(formatted)
+      }
+    }
+  }
+
   // If we parsed JSON but got nothing from protocol fields, render all
-  // string/number/boolean values as readable key-value pairs instead of raw JSON
+  // values as readable key-value pairs instead of raw JSON
+  // Skip internal/protocol fields that shouldn't be shown to the user
+  const skipKeys = new Set(['done', 'parameters', 'params', 'popupQuery', 'popup_query', 'toAgentId', 'toAgent', 'to_agent', 'tool_calls', 'function', 'type'])
   if (parts.length === 0) {
     for (const [key, val] of Object.entries(obj)) {
       if (val === null || val === undefined) continue
+      if (skipKeys.has(key)) continue
       if (typeof val === 'string' && val.trim()) {
         parts.push(`**${prettifyName(key)}**: ${val.trim()}`)
       } else if (typeof val === 'number' || typeof val === 'boolean') {
         parts.push(`**${prettifyName(key)}**: ${val}`)
       } else if (Array.isArray(val) && val.length > 0) {
-        const items = val.map((v) => typeof v === 'string' ? v : JSON.stringify(v))
+        const items = val.map((v) =>
+          typeof v === 'string' ? v
+          : typeof v === 'object' && v !== null ? renderObject(v as Record<string, unknown>)
+          : String(v)
+        )
         parts.push(`**${prettifyName(key)}**:\n${items.map((i) => `  • ${i}`).join('\n')}`)
       } else if (typeof val === 'object') {
         parts.push(renderObject(val as Record<string, unknown>, prettifyName(key)))

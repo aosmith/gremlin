@@ -214,6 +214,11 @@ input:focus, textarea:focus, select:focus {
 textarea { resize: vertical; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; }
 select   { cursor: pointer; }
 
+/* ── Links ─────────────────────────────────────────────────────────────────── */
+a { color: var(--color-accent-2); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, var(--color-accent-2) 40%, transparent); }
+a:hover { color: var(--color-accent); text-decoration-color: var(--color-accent); }
+a:visited { color: color-mix(in srgb, var(--color-accent-2) 70%, var(--color-text-3)); }
+
 /* ── Status dots ───────────────────────────────────────────────────────────── */
 .dot {
   display: inline-block;

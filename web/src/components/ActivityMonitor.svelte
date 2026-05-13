@@ -20,10 +20,14 @@
     modeDescription?: string
     agentDescriptions?: Record<string, string>
     onCopy?: () => void
+    onExport?: () => void
+    onPrint?: () => void
     onReply?: (text: string) => void
     onRetry?: (agentId: string) => void
+    onNewThread?: () => void
+    onResume?: () => void
   }
-  const { messages, agents, logs, streamingAgentId = null, streamingText = '', outputHtml = '', reportHtml = '', execSummaryHtml = '', isRunning = false, task = '', modeDescription = '', agentDescriptions = {}, onCopy, onReply, onRetry }: Props = $props()
+  const { messages, agents, logs, streamingAgentId = null, streamingText = '', outputHtml = '', reportHtml = '', execSummaryHtml = '', isRunning = false, task = '', modeDescription = '', agentDescriptions = {}, onCopy, onExport, onPrint, onReply, onRetry, onNewThread, onResume }: Props = $props()
 
   let replyText = $state('')
 
@@ -87,10 +91,11 @@
     return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
   }
 
-  // Auto-scroll to bottom when new messages arrive or streaming text updates
+  // Auto-scroll to bottom when new messages arrive, streaming text updates, or run stops
   $effect(() => {
     void messages.length
     void streamingText
+    void isRunning
     tick().then(() => {
       if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight
     })
@@ -104,6 +109,16 @@
     })
   })
 </script>
+
+<!-- Print header/footer — position:fixed repeats on every page in print -->
+<div class="print-header">
+  <span class="print-header-brand">⚡ GREMLIN</span>
+  {#if task}<span class="print-header-task">{task.length > 60 ? task.slice(0, 57) + '…' : task}</span>{/if}
+</div>
+<div class="print-footer">
+  <span class="print-footer-company">a product by thingg.co</span>
+  <span class="print-footer-date">{new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+</div>
 
 <div class="print-cover">
   <div class="cover-inner">
@@ -214,8 +229,21 @@
           {#if onCopy}
             <button class="ghost btn-sm" onclick={onCopy}>Copy</button>
           {/if}
+          {#if onExport}
+            <button class="ghost btn-sm" onclick={onExport}>Export</button>
+          {/if}
+          {#if onPrint}
+            <button class="ghost btn-sm" onclick={onPrint}>Print</button>
+          {/if}
         </div>
         <div class="result-body prose-sm">{@html sanitizeHtml(outputHtml)}</div>
+        {#if execSummaryHtml}
+          <div class="web-exec-summary">
+            <div class="exec-divider"></div>
+            <div class="exec-header-inline">Executive Summary</div>
+            <div class="exec-body-inline prose-sm">{@html sanitizeHtml(execSummaryHtml)}</div>
+          </div>
+        {/if}
         {#if onReply}
           <div class="reply-bar">
             <input
@@ -230,8 +258,47 @@
               onclick={sendReply}
               disabled={!replyText.trim()}
             >Reply</button>
+            {#if onNewThread}
+              <button
+                class="ghost btn-new-thread"
+                onclick={onNewThread}
+                title="Start a fresh session (clears context)"
+              >New Thread</button>
+            {/if}
           </div>
         {/if}
+      </div>
+    {/if}
+
+    {#if !outputHtml && !isRunning && messages.length > 0}
+      <div class="stopped-bar">
+        <span class="stopped-label">Run stopped</span>
+        <div class="stopped-actions">
+          {#if onResume}
+            <button class="primary btn-sm" onclick={onResume}>Resume</button>
+          {/if}
+          {#if onReply}
+            <input
+              class="reply-input"
+              type="text"
+              placeholder="Ask a follow-up…"
+              bind:value={replyText}
+              onkeydown={(e) => e.key === 'Enter' && sendReply()}
+            />
+            <button
+              class="primary reply-btn"
+              onclick={sendReply}
+              disabled={!replyText.trim()}
+            >Reply</button>
+          {/if}
+          {#if onNewThread}
+            <button
+              class="ghost btn-new-thread"
+              onclick={onNewThread}
+              title="Start a fresh session (clears context)"
+            >New Thread</button>
+          {/if}
+        </div>
       </div>
     {/if}
   </div>
@@ -378,6 +445,26 @@
     font-size: 13px;
     line-height: 1.65;
   }
+  .web-exec-summary {
+    padding: 0 16px 14px;
+  }
+  .exec-divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(63,185,80,0.3), transparent);
+    margin-bottom: 14px;
+  }
+  .exec-header-inline {
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--color-accent);
+    margin-bottom: 10px;
+  }
+  .exec-body-inline {
+    font-size: 13px;
+    line-height: 1.65;
+  }
   .reply-bar {
     display: flex;
     align-items: center;
@@ -404,6 +491,43 @@
   .reply-btn {
     flex-shrink: 0;
   }
+  .btn-new-thread {
+    flex-shrink: 0;
+    font-size: 11px;
+    opacity: 0.6;
+  }
+  .btn-new-thread:hover {
+    opacity: 1;
+  }
+
+  .stopped-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    margin-top: 8px;
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius);
+    animation: result-in 0.3s ease-out;
+  }
+  .stopped-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-text-3);
+    flex-shrink: 0;
+  }
+  .stopped-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+  }
+  .stopped-actions .reply-input { flex: 1; }
+
   .btn-sm { font-size: 11px; }
 
   .log-section {
@@ -486,24 +610,87 @@
   }
 
   /* ── Print-only pages ──────────────────────────────────────── */
-  .print-cover, .print-agents, .print-exec-summary, .print-report {
+  .print-cover, .print-agents, .print-exec-summary, .print-report,
+  .print-header, .print-footer {
     display: none;
   }
 
   @media print {
-    .monitor-header, .log-section, .reply-bar, .streaming-badge, .btn-retry { display: none !important; }
+    /* ── Repeating header & footer on every page ────────────────── */
+    .print-header {
+      display: block;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 28px;
+      padding: 6px 48px 0;
+      background: var(--color-bg);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      z-index: 1000;
+    }
+    .print-header-brand {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      color: var(--color-accent);
+      opacity: 0.6;
+    }
+    .print-header-task {
+      font-family: var(--font-mono);
+      font-size: 8px;
+      color: var(--color-text-4);
+      letter-spacing: 0.02em;
+      max-width: 60%;
+      text-align: right;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .print-footer {
+      display: block;
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 24px;
+      padding: 0 48px 8px;
+      background: var(--color-bg);
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      z-index: 1000;
+    }
+    .print-footer-company {
+      font-family: var(--font-mono);
+      font-size: 8px;
+      color: var(--color-text-4);
+      letter-spacing: 0.06em;
+      opacity: 0.5;
+    }
+    .print-footer-date {
+      font-family: var(--font-mono);
+      font-size: 8px;
+      color: var(--color-text-4);
+      opacity: 0.4;
+    }
+
+    .monitor-header, .log-section, .reply-bar, .stopped-bar, .streaming-badge, .btn-retry { display: none !important; }
 
     /* When a polished report exists, hide the raw event feed entirely */
     .monitor.has-report { display: none !important; }
 
     /* Fallback: if no report, show the raw feed */
     .monitor:not(.has-report) { height: auto !important; overflow: visible !important; border: none !important; background: var(--color-bg) !important; }
-    .monitor:not(.has-report) .feed { height: auto !important; overflow: visible !important; max-height: none !important; padding: 28px 32px !important; }
+    .monitor:not(.has-report) .feed { height: auto !important; overflow: visible !important; max-height: none !important; padding: 56px 48px 40px !important; }
 
     /* ── Executive summary (1 page) ──────────────────────────────── */
     .print-exec-summary {
       display: block;
-      padding: 48px 48px 32px;
+      padding: 56px 48px 40px;
       background: var(--color-bg);
       break-after: page;
     }
@@ -530,7 +717,7 @@
     /* ── Full report ─────────────────────────────────────────────── */
     .print-report {
       display: block;
-      padding: 48px 48px 32px;
+      padding: 56px 48px 40px;
       background: var(--color-bg);
     }
     .report-header {
@@ -559,7 +746,9 @@
       align-items: center;
       justify-content: center;
       height: 100vh;
+      padding: 48px;
       background: var(--color-bg);
+      box-sizing: border-box;
     }
     .cover-inner {
       text-align: center;
@@ -612,7 +801,7 @@
     /* ── Agent summary page (page 2) ─────────────────────────────── */
     .print-agents {
       display: block;
-      padding: 48px 48px 32px;
+      padding: 56px 48px 40px;
       background: var(--color-bg);
     }
     .agents-header {

@@ -10,7 +10,7 @@
  * In engineering mode (tools provided) agents can call write_file / read_file / list_directory.
  */
 
-import { callLLMWithTools, ensureOllamaModels, initLocalModelProfile } from './api'
+import { callLLMWithTools, computeNumCtx, ensureOllamaModels, initLocalModelProfile } from './api'
 import type { ToolCallEvent, StreamCallback } from './api'
 import type { OAITool, ToolExecutor, ToolCallRecord } from './tools'
 import { PROTOCOL_TOOLS, PROTOCOL_TOOL_NAMES, executeTool } from './tools'
@@ -48,8 +48,42 @@ export interface RunnerCallbacks {
   onDone: () => void
 }
 
-/** Max LLM messages kept per agent (20 = 10 user/assistant turn pairs). */
-const MAX_HISTORY_PER_AGENT = 20
+/** Max LLM messages kept per agent (12 = 6 user/assistant turn pairs). */
+const MAX_HISTORY_PER_AGENT = 12
+
+/** Rough chars-per-token estimate for English text */
+const CHARS_PER_TOKEN = 4
+
+/** Max chars allowed for a single tool call result (web_fetch can return huge HTML) */
+const MAX_TOOL_RESULT_CHARS = 12_000
+
+/** Estimate token count from character length. */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / CHARS_PER_TOKEN)
+}
+
+/**
+ * Trim conversation history to fit within a context budget.
+ * Keeps the most recent messages, dropping oldest first.
+ * Returns a new array (never mutates input).
+ */
+function trimHistoryToFit(history: LLMMessage[], systemPrompt: string, newMsg: string, contextBudget: number): LLMMessage[] {
+  // Reserve tokens: system prompt + new message + response generation headroom
+  const reservedTokens = estimateTokens(systemPrompt) + estimateTokens(newMsg) + 4096
+  const historyBudget = contextBudget - reservedTokens
+  if (historyBudget <= 0) return [] // no room for history at all
+
+  // Measure from newest to oldest, include as many as fit
+  let totalTokens = 0
+  let cutoff = history.length
+  for (let i = history.length - 1; i >= 0; i--) {
+    const msgTokens = estimateTokens(history[i].content)
+    if (totalTokens + msgTokens > historyBudget) { cutoff = i + 1; break }
+    totalTokens += msgTokens
+    if (i === 0) cutoff = 0
+  }
+  return history.slice(cutoff)
+}
 
 /** Retry config for transient LLM errors (network failures, 429/5xx). */
 const RETRY_BASE_MS = 2_000
@@ -277,50 +311,54 @@ export class AgentRunner {
 
   /**
    * Auto-ground the session with current web data before agents start.
-   * Runs 1-2 searches based on the task and injects results as a system
-   * message to the orchestrator so all downstream agents get fresh context.
+   * Runs 2-3 parallel searches and injects results as system messages
+   * to ALL agents so they start with fresh context.
    */
-  private async groundWithSearch(task: string, orchestrator: AgentConfig): Promise<void> {
+  private async groundWithSearch(task: string, _orchestrator: AgentConfig): Promise<void> {
     if (!this.tools.some((t) => t.function.name === 'web_search')) return
     if (this.aborted) return
 
     const now = new Date()
     const dateSuffix = `${now.toLocaleDateString('en-US', { month: 'long' })} ${now.getFullYear()}`
 
-    // Build 1-2 grounding queries from the task
+    // Build 2-3 grounding queries: full task + keyword extract + latest news
     const shortTask = task.slice(0, 200).trim()
-    const queries = [`${shortTask} ${dateSuffix}`]
+    // Extract key nouns/phrases for a focused query
+    const keywords = shortTask.replace(/[^\w\s]/g, '').split(/\s+/).filter(w => w.length > 3).slice(0, 5).join(' ')
+    const queries = [
+      `${shortTask} ${dateSuffix}`,
+      ...(keywords !== shortTask ? [`latest news ${keywords} ${dateSuffix}`] : []),
+    ]
 
-    this.cb.onLog('Grounding: searching for current data…')
+    this.cb.onLog(`Grounding: ${queries.length} parallel searches…`)
 
-    const results: string[] = []
-    for (const q of queries) {
-      if (this.aborted) break
-      try {
-        const r = await performWebSearch(q, this.settings, this.abortController.signal)
-        if (r && !r.startsWith('No results')) results.push(r)
-      } catch {
-        // Search failed — continue without grounding
-      }
-    }
+    // Run all grounding queries in parallel
+    const results = (await Promise.allSettled(
+      queries.map(q => performWebSearch(q, this.settings, this.abortController.signal))
+    ))
+      .filter((r): r is PromiseFulfilledResult<string> => r.status === 'fulfilled')
+      .map(r => r.value)
+      .filter(r => r && !r.startsWith('No results'))
 
     if (results.length === 0) {
       this.cb.onLog('Grounding: no search results — agents will use web_search as needed')
       return
     }
 
-    // Inject grounding data as a system message to the orchestrator
+    // Inject grounding data into ALL agents (not just orchestrator)
     const groundingContent = `── Current web data (auto-searched at session start) ──\n${results.join('\n\n')}\n\nUse this data as your starting context. Search for more detail as needed.`
-    this.emit({
-      fromAgent: 'system',
-      toAgent: orchestrator.id,
-      content: groundingContent,
-      type: 'system',
-      timestamp: Date.now(),
-      round: 0,
-    })
+    for (const agent of this.agents) {
+      this.emit({
+        fromAgent: 'system',
+        toAgent: agent.id,
+        content: groundingContent,
+        type: 'system',
+        timestamp: Date.now(),
+        round: 0,
+      })
+    }
 
-    this.cb.onLog(`Grounding: injected ${results.length} search result(s) as context`)
+    this.cb.onLog(`Grounding: injected ${results.length} search result(s) into all ${this.agents.length} agents`)
   }
 
   /** Combine protocol tools with any dev tools (file ops in engineering mode). */
@@ -345,7 +383,12 @@ export class AgentRunner {
         return { id, name, args, result: 'Marked as done', isError: false }
       }
       // Delegate to real tool executor (file ops + web search)
-      return executeTool(id, name, args, agentSettings, this.cb.onSearchNotConfigured, this.abortController.signal)
+      const record = await executeTool(id, name, args, agentSettings, this.cb.onSearchNotConfigured, this.abortController.signal)
+      // Truncate large tool results to prevent context overflow (web_fetch can return full HTML pages)
+      if (record.result.length > MAX_TOOL_RESULT_CHARS) {
+        record.result = record.result.slice(0, MAX_TOOL_RESULT_CHARS) + '\n\n[... truncated — result exceeded ' + MAX_TOOL_RESULT_CHARS + ' chars]'
+      }
+      return record
     }
   }
 
@@ -356,6 +399,7 @@ export class AgentRunner {
     attachments: Attachment[],
     callbacks: RunnerCallbacks,
     tools: OAITool[] = [],
+    mode: string = 'general',
   ): Promise<void> {
     this.aborted = false
     this.abortController = new AbortController()
@@ -386,8 +430,7 @@ export class AgentRunner {
     // Inject user task into orchestrator's inbox
     this.emit({ fromAgent: 'user', toAgent: orchestrator.id, content: task, type: 'task', timestamp: Date.now(), round: 0 })
 
-    const modeLabel = settings.runMode === 'fast' ? '⚡ fast' : '🔬 intense'
-    callbacks.onLog(`Session started (${modeLabel})${tools.length ? ' — dev tools enabled' : ''}`)
+    callbacks.onLog(`Session started${tools.length ? ' — dev tools enabled' : ''}`)
 
     // Pre-flight: detect hardware + model sizes so API calls can size num_ctx,
     // then pull any missing Ollama models before starting the agent loop.
@@ -397,8 +440,15 @@ export class AgentRunner {
     }
     await this.ensureMissingModels()
 
-    // Auto-ground agents with current web data so they don't rely on stale training data
-    await this.groundWithSearch(task, orchestrator)
+    // Auto-ground agents with current web data — only for modes that need live data.
+    // Creative/technical modes (gamedesign, engineering, networking, general) don't
+    // need "latest news" injected and it pollutes their output with politics/current events.
+    const GROUNDED_MODES = new Set(['finance', 'algotrading', 'industrial', 'medicine', 'polymarket'])
+    if (GROUNDED_MODES.has(mode)) {
+      await this.groundWithSearch(task, orchestrator)
+    } else {
+      callbacks.onLog('Grounding: skipped (not a data-driven mode)')
+    }
 
     // Start sleep-wake detector so stale fetches are aborted after system resume
     this.startHeartbeat()
@@ -458,8 +508,16 @@ export class AgentRunner {
               }
             }
             // Feed all worker output to synthesizer and continue the loop
+            const synthMsgsBefore = coord.getMessageCountFor(synthesizer.id)
             this.forceSynthesis(synthesizer, agents)
-            continue  // re-enter the loop — synthesizer will now be pending
+            const synthMsgsAfter = coord.getMessageCountFor(synthesizer.id)
+            if (synthMsgsAfter > synthMsgsBefore) {
+              continue  // re-enter the loop — synthesizer will now be pending
+            }
+            // forceSynthesis had nothing to emit (no worker output) — the orchestrator
+            // never delegated work.  Bail out rather than spinning through all rounds.
+            this.cb.onLog('⚠ No agent output to synthesize — run may have stalled. Check Settings → model and endpoint.')
+            break
           }
           this.cb.onLog('No pending messages — session complete')
           break
@@ -802,10 +860,7 @@ export class AgentRunner {
       const hist = this.histories.get(agent.id) ?? []
       const lastReply = [...hist].reverse().find((m) => m.role === 'assistant')
       if (!lastReply) continue
-      // Truncate long outputs to keep the digest manageable
-      const content = lastReply.content.length > 800
-        ? lastReply.content.slice(0, 800) + '…'
-        : lastReply.content
+      const content = lastReply.content
       summaries.set(agent.id, content)
     }
 
@@ -927,12 +982,26 @@ export class AgentRunner {
       if (isFirstTurn) parsed.done = false
 
       // Route messages
+      let routed = 0
       for (const outMsg of parsed.messages) {
         const target = this.resolveAgent(outMsg.to)
         if (target) {
           this.emit({ fromAgent: agent.id, toAgent: target.id, content: outMsg.content, type: 'message', timestamp: Date.now(), round })
+          routed++
         } else {
           this.cb.onLog(`⚠ ${agent.name} tried to message unknown agent "${outMsg.to}" — skipped`)
+        }
+      }
+
+      // If the router produced messages but none resolved to real agents, fall back to
+      // auto-distribution so workers aren't silently starved.
+      if (parsed.messages.length > 0 && routed === 0 && isFirstTurn) {
+        const workers = this.agents.filter((a) => a.role === 'worker' || a.role === 'custom')
+        if (workers.length > 0) {
+          this.cb.onLog(`↪ ${agent.name} local router produced un-routable messages — auto-distributing to workers`)
+          for (const w of workers) {
+            this.emit({ fromAgent: agent.id, toAgent: w.id, content: userContent, type: 'message', timestamp: Date.now(), round })
+          }
         }
       }
 
@@ -980,10 +1049,11 @@ Respond with ONLY this JSON object — no other text, no markdown fences:
 RULES:
 1. Send a message to EVERY worker on your team.
 2. Each assignment must be a specific, actionable instruction.
-3. Tell agents to use web_search to find current data.
+3. Tell agents to use web_fetch for structured data endpoints FIRST, then web_search only if needed.
 4. Tailor each assignment to that agent's specialty.
 5. Do NOT include your own analysis or opinions.
-6. ${agent.systemPrompt.includes('Risk Assessor') ? 'Tell Risk Assessor to wait for other agents to report before stress-testing.' : 'Be specific about what each agent should research.'}`
+6. Tell agents to report findings as JSON with all metrics — agents communicate in JSON, not prose.
+7. ${agent.systemPrompt.includes('Risk Assessor') ? 'Tell Risk Assessor to wait for other agents to report before stress-testing.' : 'Be specific about what each agent should research.'}`
     }
 
     // Follow-up turns: read worker reports, decide next action
@@ -1057,12 +1127,23 @@ Usually workers complete in one round. Choose (A) unless critical data is missin
       return
     }
 
-    const history = this.histories.get(agent.id) ?? []
+    const rawHistory = this.histories.get(agent.id) ?? []
     const systemPrompt = this.buildSystemPrompt(agent)
 
     // Per-agent overrides: merge model, provider, and search settings
     let agentSettings = this.resolveProviderSettings(agent)
     if (agent.searchProvider?.trim()) agentSettings = { ...agentSettings, searchProviders: [agent.searchProvider.trim()] }
+
+    // Trim history to fit context window — must match the num_ctx sent to Ollama
+    const effectiveModel = agent.model?.trim() || agentSettings.model || ''
+    const contextBudget = computeNumCtx(effectiveModel)
+
+    // Diagnostic: log endpoint + model so misconfig is immediately visible
+    this.cb.onLog(`${agent.name}: ${agentSettings.apiFormat} → ${agentSettings.apiEndpoint.replace(/^https?:\/\//, '').split('/')[0]} [${effectiveModel || '(no model)'}]`)
+    const history = trimHistoryToFit(rawHistory, systemPrompt, userContent, contextBudget)
+    if (history.length < rawHistory.length) {
+      this.cb.onLog(`${agent.name}: trimmed history from ${rawHistory.length} to ${history.length} messages to fit context`)
+    }
 
     // Use per-turn signal when available (enables user-stop abort), fall back to session signal
     const signal = turnSignal ?? this.abortController.signal
@@ -1267,6 +1348,12 @@ Usually workers complete in one round. Choose (A) unless critical data is missin
     // Financial mode: any agent has ticker rules in its prompt (finance + general modes)
     const isFinancialMode = Array.from(this.configs.values()).some(a => a.systemPrompt.includes('$ prefix') || a.systemPrompt.includes('ticker'))
 
+    const now = new Date()
+    const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+    const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+    const year = now.getFullYear()
+    const month = now.toLocaleDateString('en-US', { month: 'long' })
+
     const devToolSection = hasDevTools ? `
 File system tools also available:
   • write_file(path, content)   — create or overwrite a file (parent dirs auto-created)
@@ -1277,11 +1364,11 @@ All paths are relative to the project root.
 
     const searchToolSection = hasSearchTools ? `
 Web tools available:
-  • web_search(query) — search the internet for current data
+  • web_search(query) — search the internet for CURRENT data (always include ${year} in query)
   • web_fetch(url)    — fetch and read a web page
 
 MANDATORY: Search before stating facts. But be EFFICIENT:
-  1. Make 1-2 targeted web_search() calls for the key data you need
+  1. Make 1-2 targeted web_search() calls for the key data you need — ALWAYS include "${month} ${year}" in the query
   2. Optionally web_fetch() one page if you need details from a specific URL
   3. Then write your analysis using the data you found
 Do NOT make more than 3 tool calls per turn — search smart, not exhaustive.
@@ -1292,19 +1379,23 @@ If web_search returns no results, say so — do not fill gaps with training data
     const remaining = this.settings.maxRounds - this.round
     const roundBudget = `\n\nROUND BUDGET: This is round ${this.round} of ${this.settings.maxRounds}. ${remaining <= 2 ? 'TIME IS ALMOST UP — wrap up and call mark_done() NOW.' : `You have ${remaining} rounds remaining. Be efficient.`}`
 
-    const now = new Date()
-    const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
-    const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
-    const year = now.getFullYear()
-    const month = now.toLocaleDateString('en-US', { month: 'long' })
-
     return `${agent.systemPrompt}
 ${devToolSection}${searchToolSection}
 ---
-CURRENT DATE & TIME: ${dateStr}, ${timeStr}
-YOUR KNOWLEDGE CUTOFF: Your training data ends in 2024 or earlier. It is now ${year}. You know NOTHING about what has happened since your training cutoff. Any "fact" you recall from memory is potentially wrong — events have occurred, markets have resolved, prices have changed, elections have happened.
-MANDATORY SEARCH: You MUST call web_search() BEFORE stating ANY fact. Append "${month} ${year}" to every query. If search returns no results, say "data unavailable" — do NOT fill in from memory.
-CITATION REQUIRED: Tag every factual claim with [source: ...]. Any claim without a source tag is invalid output.
+⚠️ TEMPORAL GROUNDING — READ CAREFULLY ⚠️
+TODAY IS: ${dateStr}, ${timeStr}
+CURRENT YEAR: ${year} | CURRENT MONTH: ${month}
+
+YOUR TRAINING DATA IS OBSOLETE. Your knowledge ends in 2024 or earlier. It is now ${month} ${year}. Every "fact" from your training data about prices, markets, events, elections, policies, companies, or predictions is STALE AND LIKELY WRONG. Markets move. Events resolve. Prices change. Do NOT trust your memory.
+
+SEARCH RULES:
+1. You MUST call web_search() BEFORE stating ANY fact, price, probability, or claim.
+2. EVERY search query MUST include "${year}" or "${month} ${year}". Example: web_search("Bitcoin price ${month} ${year}") — NOT web_search("Bitcoin price").
+3. NEVER use past years in queries unless explicitly researching historical data. If you catch yourself writing "2024" or "2025" in a query, STOP and correct it to ${year}.
+4. If search returns no results, say "data unavailable" — do NOT fill gaps from memory.
+5. Any fact without a [source: ...] tag is INVALID and must be deleted from your output.
+
+STALE DATA = FINANCIAL LOSS. Old prices, resolved predictions, and outdated analysis cost real money. When in doubt, search again with "${month} ${year}".
 
 You are operating inside GREMLIN, a multi-agent coordination system.
 Your agent ID : ${agent.id}
@@ -1317,8 +1408,10 @@ COMMUNICATION — Use the provided tool functions:
   • send_message(to, content) — send a message to another agent (use their ID or name)
   • mark_done(result?)        — signal you have completed your task; optionally include a final result string
 
-Your text/prose output is your analysis — it is displayed to humans with full Markdown rendering.
-Use rich Markdown: ## headers, **bold**, tables, bullet points. Make it scannable and professional.
+TWO OUTPUT FORMATS:
+• Your "analysis" text/prose → displayed to HUMANS. Use rich Markdown: ## headers, **bold**, tables, bullet points. Make it scannable and professional.
+• Your send_message() content → read by OTHER AGENTS. Use structured JSON with all metrics. Agents parse data, not prose.
+• Your mark_done(result) → displayed to HUMANS. Use rich Markdown formatting.
 Actions (messaging, finishing) are done via tool calls.
 IMPORTANT: Do NOT echo or narrate your tool calls in your prose. Never write send_message(...) or mark_done(...) in your analysis text — just call the tools. Your prose should contain your thinking and analysis, not a log of function calls.
 
@@ -1349,16 +1442,16 @@ Do NOT say "based on the analysis" or "as discussed" — include the ACTUAL data
 Do NOT summarise briefly — the user wants depth. Aim for a complete, detailed report.
 
 QUALITY GATE — If worker data is INSUFFICIENT for a high-quality report:
-• Send messages back to specific workers requesting the missing data${isFinancialMode ? ' (e.g. "Need current P/E and price for $AAPL — please web_fetch Finviz")' : ''}
+• Send messages back to specific workers requesting the missing data${isFinancialMode ? ' (e.g. "Need current P/E and price — please web_fetch Finviz")' : ''}
 • Do NOT call mark_done() yet — wait for the additional data
 • Only produce your final report when you have enough concrete data to fill every field
 • It is BETTER to request another round of data than to produce a weak report with gaps
 
-VERIFICATION PASS — Before formatting, send your complete draft to the TDD Engineer via send_message("TDD Engineer", <your full draft>).
+${this.configs.has('tdd_engineer') ? `VERIFICATION PASS — Before formatting, send your complete draft to the TDD Engineer via send_message("TDD Engineer", <your full draft>).
 The TDD Engineer will verify key claims and flag errors. If they report FAILs, fix those issues before proceeding.
 If the TDD Engineer is not available or does not respond within 1 round, proceed anyway.
-
-EDITOR PASS — After verification, send your draft to the Editor agent via send_message("Editor", <your full draft>).
+` : ''}
+EDITOR PASS — Send your draft to the Editor agent via send_message("Editor", <your full draft>).
 Wait for the Editor to return a formatted version, then call mark_done() with the Editor's output as the result.
 If the Editor is not available or does not respond within 1 round, call mark_done() with your own draft.
 ` : ''}
@@ -1370,19 +1463,21 @@ WORKER INSTRUCTIONS — You can collaborate directly with other workers listed a
 • Keep peer exchanges focused — one or two rounds of back-and-forth at most.
 • Do NOT message peers just to be polite — only when it adds concrete value (shared data, dependency, contradiction).
 ${isFinancialMode ? `
-When sending data to OTHER AGENTS via send_message(), include structured data so they can parse it easily.
-For financial data, include a JSON block in your message:
+INTER-AGENT DATA FORMAT — MANDATORY:
+When sending data to OTHER AGENTS via send_message(), you MUST use JSON. Agents parse JSON, not prose.
+Your message content to other agents should be a JSON object:
 \`\`\`json
-{"tickers": [{"symbol": "$AAPL", "price": 185.23, "pe": 29.1, ...}]}
-\`\`\`` : `
-When sending data to OTHER AGENTS via send_message(), include structured data so they can parse it easily.`}
+{"findings": [{"symbol": "$TICKER", "company": "Name", "price": 123.45, "pe": 25.0, "fwdPe": 22.1, "peg": 1.2, "ps": 3.5, "pb": 4.1, "eps": 5.67, "epsGrowth": "15%", "revGrowth": "12%", "roe": "28%", "roa": "14%", "profitMargin": "25%", "opMargin": "30%", "debtEquity": 0.45, "currentRatio": 2.1, "shortFloat": "3.2%", "beta": 1.1, "verdict": "your independent conclusion", ...}], "summary": "brief top-level finding"}
+\`\`\`
+Include EVERY metric you fetched. More data = better downstream analysis. Prose is for humans in mark_done() results only.` : `
+When sending data to OTHER AGENTS via send_message(), include structured JSON data so they can parse it programmatically.`}
 
 CRITICAL OUTPUT RULE: Always produce CONCRETE, SPECIFIC output — real data, names, numbers, lists, calculations.
 Never describe what you "would do" or outline steps. Actually DO the work and report the results.` : ''}
 ${roundBudget}${isFinancialMode ? `
 
 OUTPUT FORMAT REMINDER — MANDATORY:
-Every stock or company ticker MUST have a $ prefix: $AAPL, $MSFT, $NVDA, $GOOG.
+Every stock or company ticker MUST have a $ prefix.
 First mention: "Company Name ($TICKER)". After that: $TICKER alone.
 NEVER write a bare ticker without $. This is required for rendering.` : ''}`
   }

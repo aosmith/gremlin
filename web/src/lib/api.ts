@@ -70,20 +70,29 @@ function isLocalEndpoint(endpoint: string): boolean {
  * Compute optimal num_ctx for a given model based on GPU memory budget.
  * Goal: leave enough room for KV cache without spilling layers to CPU.
  */
-function computeNumCtx(modelName: string): number {
-  if (_gpuMemoryGB === 0) return 8192  // no hardware info — safe default
+/** User-configured context length (0 = auto-detect). Set from settings. */
+let _contextLength = 0
+
+export function setContextLength(len: number) { _contextLength = len }
+
+export function computeNumCtx(modelName: string): number {
+  // If user set an explicit context length, use it
+  if (_contextLength > 0) return _contextLength
+
+  if (_gpuMemoryGB === 0) return 16384  // no hardware info — generous default for modern hardware
 
   const modelGB = _modelSizeMap.get(modelName) ?? 0
   // Available memory for KV cache = 95% of GPU minus model weights
   // (unified memory machines can use nearly all RAM for inference)
   const kvBudgetGB = _gpuMemoryGB * 0.95 - modelGB
 
-  if (kvBudgetGB <= 0) return 2048     // model barely fits — minimal context
-  if (kvBudgetGB < 1) return 4096
-  if (kvBudgetGB < 2) return 8192
-  if (kvBudgetGB < 4) return 16384
-  if (kvBudgetGB < 8) return 32768
-  return 65536
+  // Minimum 16384 — Ollama can partially offload models larger than VRAM,
+  // and 4096 is too small for multi-agent prompts (causes stuck agents).
+  if (kvBudgetGB <= 0) return 16384
+  if (kvBudgetGB < 1) return 16384
+  if (kvBudgetGB < 2) return 16384
+  if (kvBudgetGB < 4) return 24576
+  return 32768
 }
 
 // ── Multimodal content helpers ───────────────────────────────────────────────
@@ -129,7 +138,7 @@ function toGeminiParts(msg: LLMMessage): unknown[] {
 export type StreamCallback = (delta: string, accumulated: string) => void
 
 /** Parse an SSE (Server-Sent Events) response stream into individual events. */
-async function* parseSSE(response: Response): AsyncGenerator<{ event?: string; data: string }> {
+async function* parseSSE(response: Response, signal?: AbortSignal): AsyncGenerator<{ event?: string; data: string }> {
   const body = response.body
   if (!body) return
   const reader = body.getReader()
@@ -137,8 +146,13 @@ async function* parseSSE(response: Response): AsyncGenerator<{ event?: string; d
   let buffer = ''
   let currentEvent: string | undefined
 
+  // Cancel the reader when abort fires — this unblocks reader.read()
+  const onAbort = () => { reader.cancel().catch(() => {}) }
+  signal?.addEventListener('abort', onAbort, { once: true })
+
   try {
     while (true) {
+      if (signal?.aborted) break
       const { done, value } = await reader.read()
       if (done) break
       buffer += decoder.decode(value, { stream: true })
@@ -158,6 +172,7 @@ async function* parseSSE(response: Response): AsyncGenerator<{ event?: string; d
       }
     }
   } finally {
+    signal?.removeEventListener('abort', onAbort)
     reader.releaseLock()
   }
 }
@@ -200,11 +215,13 @@ function extractToolCallText(name: string, args: string): string {
 async function streamOpenAIResponse(
   resp: Response,
   onStream?: StreamCallback,
+  signal?: AbortSignal,
 ): Promise<{ content: string; toolCalls: OAIToolCall[] }> {
   let content = ''
   const toolCallMap = new Map<number, { id: string; name: string; args: string }>()
 
-  for await (const { data } of parseSSE(resp)) {
+  for await (const { data } of parseSSE(resp, signal)) {
+    if (signal?.aborted) break
     let chunk: any
     try { chunk = JSON.parse(data) } catch { continue }
 
@@ -243,6 +260,77 @@ async function streamOpenAIResponse(
       function: { name: tc.name, arguments: tc.args },
     })),
   }
+}
+
+// ── Ollama native stream parser ──────────────────────────────────────────────
+
+/**
+ * Parse Ollama /api/chat streaming response (newline-delimited JSON).
+ * Returns the same format as streamOpenAIResponse for interchangeability.
+ */
+async function streamOllamaResponse(
+  resp: Response,
+  onStream?: StreamCallback,
+  signal?: AbortSignal,
+): Promise<{ content: string; toolCalls: OAIToolCall[] }> {
+  let content = ''
+  const toolCalls: OAIToolCall[] = []
+
+  const body = resp.body
+  if (!body) return { content, toolCalls }
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  // Cancel the reader when abort fires — this unblocks reader.read()
+  const onAbort = () => { reader.cancel().catch(() => {}) }
+  signal?.addEventListener('abort', onAbort, { once: true })
+
+  try {
+    while (true) {
+      if (signal?.aborted) break
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      let newlineIdx: number
+      while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newlineIdx).trim()
+        buffer = buffer.slice(newlineIdx + 1)
+        if (!line) continue
+
+        let chunk: any
+        try { chunk = JSON.parse(line) } catch { continue }
+
+        // Text content delta
+        if (chunk.message?.content) {
+          content += chunk.message.content
+          onStream?.(chunk.message.content, content)
+        }
+
+        // Tool calls (returned in the final chunk)
+        if (chunk.message?.tool_calls?.length) {
+          for (const tc of chunk.message.tool_calls) {
+            const args = tc.function?.arguments
+            toolCalls.push({
+              id: tc.id || `call_${toolCalls.length}`,
+              type: 'function',
+              function: {
+                name: tc.function?.name ?? '',
+                // Ollama returns args as object, stringify for consistency
+                arguments: typeof args === 'string' ? args : JSON.stringify(args ?? {}),
+              },
+            })
+          }
+        }
+      }
+    }
+  } finally {
+    signal?.removeEventListener('abort', onAbort)
+    reader.releaseLock()
+  }
+
+  return { content, toolCalls }
 }
 
 // ── Anthropic SSE stream parser ──────────────────────────────────────────────
@@ -372,7 +460,7 @@ export async function callLLM(
     case 'webllm':    return callWebLLM(
       [{ role: 'system', content: systemPrompt }, ...messages.map((m) => ({ role: m.role, content: toOaiContent(m) as string }))],
       settings.model,
-      4096,
+      16384,
       onProgress,
     )
     default:          return callOpenAICompat(systemPrompt, messages, settings, signal)
@@ -405,7 +493,10 @@ export async function callLLMWithTools(
   if (settings.apiFormat === 'anthropic') {
     return callAnthropicWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall, signal, executor, onStream)
   }
-  if (settings.apiFormat === 'webllm') {
+  // Only route to WebLLM when it's explicitly enabled.
+  // If apiFormat='webllm' but webllmEnabled=false (e.g. stale settings from a previous session),
+  // fall through to OpenAI-compat so agents aren't silently broken.
+  if (settings.apiFormat === 'webllm' && settings.webllmEnabled) {
     return callWebLLMWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall, executor, onProgress)
   }
   return callOpenAIWithTools(systemPrompt, messages, settings, tools, agentId, onToolCall, signal, executor, onStream)
@@ -468,7 +559,8 @@ async function callOpenAIWithTools(
     let toolCalls: OAIToolCall[] = []
 
     if (useStream) {
-      const result = await streamOpenAIResponse(resp, roundStreamCb)
+      const streamParser = isOllamaEndpoint(settings.apiEndpoint) ? streamOllamaResponse : streamOpenAIResponse
+      const result = await streamParser(resp, roundStreamCb, signal)
       content = result.content || null
       toolCalls = result.toolCalls
     } else {
@@ -479,22 +571,52 @@ async function callOpenAIWithTools(
       toolCalls = choice.message?.tool_calls ?? []
     }
 
+    const isOllama = isOllamaEndpoint(settings.apiEndpoint)
+
     // Add assistant message to history
-    const assistantMsg: OAIMsg = { role: 'assistant', content }
-    if (toolCalls.length > 0) assistantMsg.tool_calls = toolCalls
-    msgs.push(assistantMsg)
+    // Ollama /api/chat expects tool_call arguments as objects, not JSON strings.
+    // It also doesn't use 'id' or 'type' fields on tool_calls.
+    if (toolCalls.length > 0) {
+      if (isOllama) {
+        const ollamaToolCalls = toolCalls.map((tc) => {
+          const rawArgs = tc.function.arguments
+          const argsObj = typeof rawArgs === 'object' && rawArgs !== null
+            ? rawArgs
+            : (() => { try { return JSON.parse(rawArgs as string) } catch { return {} } })()
+          return { function: { name: tc.function.name, arguments: argsObj } }
+        })
+        msgs.push({ role: 'assistant', content: content ?? '', tool_calls: ollamaToolCalls } as OAIMsg)
+      } else {
+        const assistantMsg: OAIMsg = { role: 'assistant', content }
+        assistantMsg.tool_calls = toolCalls
+        msgs.push(assistantMsg)
+      }
+    } else {
+      msgs.push({ role: 'assistant', content } as OAIMsg)
+    }
 
     if (toolCalls.length > 0) {
       // Execute all tool calls in this round
       for (const tc of toolCalls) {
         let args: Record<string, unknown> = {}
-        try { args = JSON.parse(tc.function.arguments) } catch { /* leave empty */ }
+        // Ollama /api/chat returns arguments as object; OpenAI returns as string
+        const rawArgs = tc.function.arguments
+        if (typeof rawArgs === 'object' && rawArgs !== null) {
+          args = rawArgs as Record<string, unknown>
+        } else {
+          try { args = JSON.parse(rawArgs) } catch { /* leave empty */ }
+        }
 
         const exec = executor ?? executeTool
         const record = await exec(tc.id, tc.function.name, args)
         onToolCall({ agentId, record })
 
-        msgs.push({ role: 'tool', tool_call_id: tc.id, content: record.result })
+        // Ollama /api/chat doesn't use tool_call_id
+        if (isOllama) {
+          msgs.push({ role: 'tool', tool_call_id: '', content: record.result })
+        } else {
+          msgs.push({ role: 'tool', tool_call_id: tc.id, content: record.result })
+        }
       }
     } else {
       return content ?? ''
@@ -505,6 +627,11 @@ async function callOpenAIWithTools(
 }
 
 
+/** Detect if an endpoint is an Ollama instance (localhost:11434). */
+function isOllamaEndpoint(endpoint: string): boolean {
+  return endpoint.includes('localhost:11434') || endpoint.includes('127.0.0.1:11434')
+}
+
 function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[], signal?: AbortSignal, stream = false) {
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (settings.apiKey.trim()) headers['authorization'] = `Bearer ${settings.apiKey}`
@@ -513,36 +640,67 @@ function oaiFetch(settings: Settings, messages: unknown[], tools?: OAITool[], si
     headers['x-title'] = 'GREMLIN'
   }
 
+  // For Ollama: use native /api/chat so options.num_ctx is respected.
+  // The /v1/chat/completions shim silently ignores num_ctx.
+  const useOllamaNative = isOllamaEndpoint(settings.apiEndpoint)
+
   const body: Record<string, unknown> = {
     model: settings.model,
-    max_tokens: 4096,
     messages,
     stream,
   }
-  // Local LLM servers: cap context window based on available GPU memory to prevent
-  // KV cache from blowing through VRAM and spilling layers to (slow) CPU.
-  if (isLocalEndpoint(settings.apiEndpoint)) {
+
+  if (useOllamaNative) {
     body.options = { num_ctx: computeNumCtx(settings.model) }
-  }
-  // Ollama-specific: keep models loaded briefly to avoid cold-starts within a run,
-  // but short enough that memory is freed for the next model swap.
-  if (settings.apiEndpoint.includes('localhost:11434') || settings.apiEndpoint.includes('127.0.0.1:11434')) {
-    body.keep_alive = '5m'
-  }
-  if (tools?.length) {
-    body.tools = tools
-    body.tool_choice = 'auto'
+    body.keep_alive = -1  // keep loaded indefinitely — unloaded explicitly on stop
+  } else {
+    body.max_tokens = 16384
+    if (isLocalEndpoint(settings.apiEndpoint)) {
+      body.options = { num_ctx: computeNumCtx(settings.model) }
+    }
   }
 
-  return proxiedFetch(settings.apiEndpoint, { method: 'POST', headers, body: JSON.stringify(body), signal }, settings)
-    .then((r) => {
+  if (tools?.length) {
+    body.tools = tools
+    // Ollama /api/chat does not support tool_choice — only set for OpenAI-compat
+    if (!useOllamaNative) body.tool_choice = 'auto'
+  }
+
+  // Rewrite URL to /api/chat for Ollama
+  let endpoint = settings.apiEndpoint
+  if (useOllamaNative) {
+    endpoint = endpoint.replace(/\/v1\/chat\/completions.*$/, '/api/chat')
+  }
+
+  return proxiedFetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body), signal }, settings)
+    .then(async (r) => {
       if (!r.ok) return r.text().then((t) => {
-        // Ollama returns a plain error object when the model isn't installed
         if (t.includes('not found') || t.includes('pull')) {
           throw new Error(`Model "${settings.model}" is not installed. Run: ollama pull ${settings.model}`)
         }
         throw new Error(`API ${r.status}: ${t}`)
       })
+      // Non-streaming Ollama: wrap response into OpenAI format
+      if (useOllamaNative && !stream) {
+        const data = await r.json()
+        const hasToolCalls = data.message?.tool_calls?.length > 0
+        const wrapped = {
+          choices: [{
+            index: 0,
+            message: data.message,
+            finish_reason: hasToolCalls ? 'tool_calls' : (data.done ? 'stop' : null),
+          }],
+          model: data.model,
+          usage: {
+            prompt_tokens: data.prompt_eval_count ?? 0,
+            completion_tokens: data.eval_count ?? 0,
+          },
+        }
+        return new Response(JSON.stringify(wrapped), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
       return r
     })
 }
@@ -644,7 +802,7 @@ function anthropicFetch(
 ) {
   const body: Record<string, unknown> = {
     model: settings.model,
-    max_tokens: 4096,
+    max_tokens: 16384,
     system,
     messages,
     stream,
@@ -687,7 +845,7 @@ async function callWebLLMWithTools(
   for (let round = 0; round < 12; round++) {
     const resp = await eng.chat.completions.create({
       messages: msgs as Parameters<typeof eng.chat.completions.create>[0]['messages'],
-      max_tokens: 4096,
+      max_tokens: 16384,
       tools: tools as Parameters<typeof eng.chat.completions.create>[0]['tools'],
       tool_choice: 'auto',
       stream: false,
@@ -832,6 +990,54 @@ export async function fetchOllamaModels(baseUrl: string): Promise<string[]> {
   if (!resp.ok) throw new Error(`${resp.status}`)
   const data = await resp.json()
   return ((data.models ?? []) as Array<{ name: string }>).map((m) => m.name).sort()
+}
+
+// ── Ollama library (remote model catalog) ────────────────────────────────────
+
+export interface OllamaLibraryModel {
+  name: string
+  sizeGB: number
+  modifiedAt: string
+}
+
+const LIBRARY_CACHE_KEY = 'gremlin_ollama_library'
+const LIBRARY_CACHE_TTL = 24 * 60 * 60 * 1000 // 24 hours
+
+/**
+ * Fetch available models from the Ollama library (ollama.com/api/tags).
+ * Result is cached in localStorage for 24 hours.
+ */
+export async function fetchOllamaLibrary(): Promise<OllamaLibraryModel[]> {
+  // Return cached data if fresh
+  try {
+    const raw = localStorage.getItem(LIBRARY_CACHE_KEY)
+    if (raw) {
+      const { data, ts } = JSON.parse(raw)
+      if (Date.now() - ts < LIBRARY_CACHE_TTL) return data
+    }
+  } catch { /* ignore */ }
+
+  // Fetch via built-in CORS proxy
+  const proxyUrl = `${window.location.origin}/cors-proxy`
+  const resp = await fetch(proxyUrl, {
+    headers: { 'X-Target-URL': 'https://ollama.com/api/tags?limit=1000' },
+  })
+  if (!resp.ok) throw new Error(`Ollama library: HTTP ${resp.status}`)
+  const json = await resp.json()
+
+  const models: OllamaLibraryModel[] = ((json.models ?? []) as Array<{ name: string; size: number; modified_at: string }>)
+    .map((m) => ({
+      name: m.name,
+      sizeGB: Math.round(m.size / 1e9 * 10) / 10,
+      modifiedAt: m.modified_at,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+  try {
+    localStorage.setItem(LIBRARY_CACHE_KEY, JSON.stringify({ data: models, ts: Date.now() }))
+  } catch { /* ignore */ }
+
+  return models
 }
 
 /**
