@@ -228,7 +228,7 @@ footer {
 <header class="hero">
   <div class="wrap">
     <h1><span class="bolt">⚡</span> Gremlin</h1>
-    <p class="lede">A local, browser-native multi-agent coordinator. A TypeScript module routes all inter-agent messages; a Svelte UI lets you watch every conversation and inject human input at any point. No server required.</p>
+    <p class="lede">A browser-native multi-agent coordinator. Spin up a team of AI agents that message each other, call tools, and converge on a result — using any model you choose: local (Ollama, LM Studio, WebLLM) or cloud (OpenAI, Anthropic, Gemini, Groq, OpenRouter, Together, or any OpenAI-compatible endpoint). No server required.</p>
     <div class="cta-row">
       <a class="btn primary" href="#install">Get started</a>
       <a class="btn" href="https://github.com/aosmith/gremlin">GitHub →</a>
@@ -239,8 +239,8 @@ footer {
 <section id="what">
   <div class="wrap">
     <h2>What it is</h2>
-    <p>Gremlin runs a team of AI agents on your machine. Each agent has its own system prompt, model, and role. They send messages to each other, call tools (web search, file system, browser), and converge on a result. You watch the whole conversation happen in real time.</p>
-    <p>The Vite dev server <em>is</em> the runtime — there is no separate backend or production deployment. Everything is local: agents, coordinator, UI, and (optionally) inference.</p>
+    <p>Gremlin runs a team of AI agents from a browser tab. Each agent has its own system prompt, model, and role. They send messages to each other, call tools (web search, file system, browser), and converge on a result. You watch the whole conversation happen in real time.</p>
+    <p>The Vite dev server <em>is</em> the runtime — there is no separate backend. The coordinator and UI run locally; inference can run locally (Ollama, LM Studio, WebLLM) or against any cloud provider (OpenAI, Anthropic, Gemini, Groq, OpenRouter, Together, or any OpenAI-compatible endpoint). API keys live in <code class="mono">localStorage</code> and only ever reach the provider you point them at.</p>
   </div>
 </section>
 
@@ -289,12 +289,20 @@ footer {
 <section id="providers">
   <div class="wrap">
     <h2>Bring your own model</h2>
-    <p>Gremlin is a coordinator, not a model. Point it at any of the supported providers and pick a model per agent.</p>
+    <p>Gremlin is a coordinator, not a model. Point it at any supported provider and pick a model per agent — mix local and cloud across the same team if you want.</p>
     <ul>
-      <li><strong>Local</strong> — Ollama, LM Studio, WebLLM (in-browser via WebGPU)</li>
-      <li><strong>Cloud</strong> — OpenAI, Anthropic, Google Gemini, OpenRouter, Groq, Together, or any OpenAI-compatible endpoint</li>
+      <li><strong>OpenAI</strong> — GPT-4o and variants. Drop in an API key.</li>
+      <li><strong>Anthropic</strong> — Claude Opus / Sonnet / Haiku. Drop in an API key.</li>
+      <li><strong>Google Gemini</strong> — free tier available.</li>
+      <li><strong>OpenRouter</strong> — 200+ models behind one key, free tier available.</li>
+      <li><strong>Groq</strong> — very fast inference, free tier available.</li>
+      <li><strong>Together</strong> — open-source models in the cloud.</li>
+      <li><strong>Custom</strong> — any OpenAI-compatible endpoint (vLLM, llama.cpp server, etc.).</li>
+      <li><strong>Ollama</strong> — local models, any size. Auto-detects your GPU and recommends per-agent assignments on first run.</li>
+      <li><strong>LM Studio</strong> — local server, point-and-click model management.</li>
+      <li><strong>WebLLM</strong> — in-browser inference via WebGPU. Zero install, zero server.</li>
     </ul>
-    <p>API keys are kept in <code class="mono">localStorage</code> and sent only to the provider you configure.</p>
+    <p>API keys live in <code class="mono">localStorage</code> and are sent only to the provider you point them at. Nothing is proxied through Gremlin's servers — there are no Gremlin servers.</p>
   </div>
 </section>
 
