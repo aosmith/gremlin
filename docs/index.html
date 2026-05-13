@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Gremlin — Local multi-agent coordinator</title>
+<meta name="description" content="A local, browser-native multi-agent coordinator. Watch a team of AI agents collaborate on your machine." />
+<meta name="theme-color" content="#090c12" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='52' font-size='52'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E" />
+
+<style>
+:root {
+  --color-bg:          #090c12;
+  --color-text:        #ffffff;
+  --color-text-2:      rgba(255, 255, 255, 0.68);
+  --color-text-3:      rgba(255, 255, 255, 0.45);
+  --color-accent:      #3fb950;
+  --color-accent-2:    #58a6ff;
+  --glass:             rgba(255, 255, 255, 0.04);
+  --glass-border:      rgba(255, 255, 255, 0.10);
+  --glass-light:       rgba(255, 255, 255, 0.07);
+  --glass-tinted:      rgba(63, 185, 80, 0.06);
+  --glass-tinted-border:rgba(63, 185, 80, 0.22);
+  --radius:    6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --font:      -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Scroll lives on <html>; body is unconstrained. */
+html {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  scroll-behavior: smooth;
+  overflow-x: clip;
+}
+body {
+  font-size: 15px;
+  line-height: 1.6;
+  background: transparent;
+}
+
+.bg-grid {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(63,185,80,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(63,185,80,0.025) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+a { color: var(--color-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.wrap { max-width: 820px; margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+
+/* ── Nav ─────────────────────────────────────────────── */
+.nav {
+  position: sticky; top: 0; z-index: 50;
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  background: rgba(9, 12, 18, 0.6);
+  border-bottom: 1px solid var(--glass-border);
+}
+.nav-inner {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 24px; max-width: 820px; margin: 0 auto;
+}
+.brand {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-weight: 700; letter-spacing: 0.5px; font-size: 15px;
+}
+.brand .bolt { color: var(--color-accent); }
+.nav-links { display: flex; gap: 22px; align-items: center; }
+.nav-links a { color: var(--color-text-2); font-size: 13px; }
+.nav-links a:hover { color: var(--color-text); text-decoration: none; }
+
+/* ── Buttons ─────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 18px;
+  border-radius: var(--radius);
+  border: 1px solid var(--glass-border);
+  background: var(--glass);
+  color: var(--color-text);
+  font-family: inherit; font-size: 14px; font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+}
+.btn:hover { background: var(--glass-light); transform: translateY(-1px); text-decoration: none; }
+.btn.primary {
+  background: var(--color-accent); border-color: var(--color-accent); color: #06160a;
+  font-weight: 600;
+}
+.btn.primary:hover { background: #4cc55e; }
+
+/* ── Hero ─────────────────────────────────────────────── */
+.hero { padding: 80px 0 48px; }
+h1 {
+  font-size: clamp(36px, 6vw, 56px);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+  margin-bottom: 20px;
+}
+h1 .bolt { color: var(--color-accent); }
+.lede {
+  font-size: clamp(16px, 2vw, 18px);
+  color: var(--color-text-2);
+  margin-bottom: 28px;
+  max-width: 640px;
+}
+.cta-row { display: inline-flex; gap: 10px; flex-wrap: wrap; }
+
+/* ── Sections ─────────────────────────────────────────── */
+section { padding: 48px 0; }
+h2 {
+  font-size: clamp(22px, 3vw, 28px);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-bottom: 18px;
+}
+section p { color: var(--color-text-2); margin-bottom: 12px; }
+section p:last-child { margin-bottom: 0; }
+section ul { list-style: none; margin: 16px 0; }
+section li {
+  padding: 6px 0 6px 22px;
+  position: relative;
+  color: var(--color-text-2);
+}
+section li::before {
+  content: '→';
+  position: absolute; left: 0;
+  color: var(--color-accent);
+}
+section li strong { color: var(--color-text); font-weight: 600; }
+
+/* ── Glass card ───────────────────────────────────────── */
+.card {
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-xl);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  padding: 24px;
+}
+
+/* ── How it works diagram ────────────────────────────── */
+.flow {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--color-text-2);
+  padding: 18px;
+  background: rgba(0,0,0,0.3);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+}
+.flow .acc  { color: var(--color-accent); }
+.flow .b    { color: var(--color-accent-2); }
+.flow .mute { color: var(--color-text-3); }
+
+/* ── Install code ────────────────────────────────────── */
+.code {
+  display: block;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  background: rgba(0,0,0,0.4);
+  border: 1px solid var(--glass-border);
+  font-family: var(--font-mono); font-size: 13px;
+  color: var(--color-text);
+  overflow-x: auto;
+  white-space: pre;
+  line-height: 1.7;
+  margin: 14px 0;
+}
+.code .c-prompt { color: var(--color-accent); user-select: none; }
+.code .c-comment { color: var(--color-text-3); }
+
+/* Inline mono */
+code.mono {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 1px 6px;
+  background: rgba(0,0,0,0.3);
+  border-radius: 4px;
+  color: var(--color-text);
+}
+
+/* ── Footer ───────────────────────────────────────────── */
+footer {
+  padding: 32px 0 48px;
+  margin-top: 32px;
+  border-top: 1px solid var(--glass-border);
+  color: var(--color-text-3);
+  font-size: 13px;
+}
+.foot { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; }
+.foot a { color: var(--color-text-2); }
+
+@media (max-width: 600px) {
+  .nav-links a:not(:last-child) { display: none; }
+  .hero { padding: 56px 0 32px; }
+  section { padding: 32px 0; }
+}
+</style>
+</head>
+<body>
+
+<div class="bg-grid"></div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="#" class="brand"><span class="bolt">⚡</span> GREMLIN</a>
+    <div class="nav-links">
+      <a href="#how">How it works</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/aosmith/gremlin">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <h1><span class="bolt">⚡</span> Gremlin</h1>
+    <p class="lede">A local, browser-native multi-agent coordinator. A TypeScript module routes all inter-agent messages; a Svelte UI lets you watch every conversation and inject human input at any point. No server required.</p>
+    <div class="cta-row">
+      <a class="btn primary" href="#install">Get started</a>
+      <a class="btn" href="https://github.com/aosmith/gremlin">GitHub →</a>
+    </div>
+  </div>
+</header>
+
+<section id="what">
+  <div class="wrap">
+    <h2>What it is</h2>
+    <p>Gremlin runs a team of AI agents on your machine. Each agent has its own system prompt, model, and role. They send messages to each other, call tools (web search, file system, browser), and converge on a result. You watch the whole conversation happen in real time.</p>
+    <p>The Vite dev server <em>is</em> the runtime — there is no separate backend or production deployment. Everything is local: agents, coordinator, UI, and (optionally) inference.</p>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <h2>How it works</h2>
+    <p>A TypeScript coordinator (<code class="mono">coordinator.ts</code>) holds the in-memory agent state and routes messages. Each agent returns JSON:</p>
+    <div class="flow">
+<span class="mute">{</span>
+  <span class="acc">"analysis"</span>: <span class="b">"My reasoning here"</span>,
+  <span class="acc">"messages"</span>: [
+    <span class="mute">{</span> <span class="acc">"to"</span>: <span class="b">"critic"</span>, <span class="acc">"content"</span>: <span class="b">"Verify finding #3"</span> <span class="mute">}</span>
+  ],
+  <span class="acc">"done"</span>: <span class="b">false</span>,
+  <span class="acc">"result"</span>: <span class="b">null</span>
+<span class="mute">}</span>
+    </div>
+    <p>The coordinator routes each <code class="mono">message</code> to its recipient and runs the next agent. When an agent sets <code class="mono">done: true</code> with a <code class="mono">result</code>, that agent stops. The synthesizer's result is shown to the user.</p>
+    <p>Agents can also call tools via the standard tool-calling API:</p>
+    <ul>
+      <li><strong>web_search / web_fetch</strong> — DuckDuckGo by default; Brave, Serper, Tavily, SearXNG, or Cloudflare optional</li>
+      <li><strong>read_file / write_file / list_directory</strong> — in Engineering mode, after granting a folder via the File System Access API</li>
+      <li><strong>browse_navigate / click / type / evaluate / assert</strong> — Playwright headless Chromium sidecar at <code class="mono">127.0.0.1:3131</code></li>
+    </ul>
+  </div>
+</section>
+
+<section id="modes">
+  <div class="wrap">
+    <h2>Built-in modes</h2>
+    <p>Each mode loads a preset roster of agents. You can edit any agent, save a new mode from your current team, or delete custom modes.</p>
+    <ul>
+      <li><strong>General</strong> — CEO · Researcher · Analyst · Critic · Writer · Editor · Chief of Staff</li>
+      <li><strong>Engineering</strong> — CTO and a full software dev team with file-system tools</li>
+      <li><strong>Finance</strong> — Capital Allocator with Value / Quant / Filings / Risk / Sector analysts</li>
+      <li><strong>Algo Trading</strong> — Strategy, quant, engineering, and risk roles for building trading bots</li>
+      <li><strong>Industrial</strong> — Manufacturing, operations, supply chain, quality</li>
+      <li><strong>Medicine</strong> — Attending physician, diagnosticians, pharmacist, specialists</li>
+      <li><strong>Networking</strong> — NOC director with transport / routing / voice / RF engineers</li>
+      <li><strong>Prediction Markets</strong> — Probability modeler, news scanner, whale tracker, arbitrage analyst</li>
+      <li><strong>Game Design</strong> — Director, designer, narrative, art, 3D, architecture</li>
+    </ul>
+  </div>
+</section>
+
+<section id="providers">
+  <div class="wrap">
+    <h2>Bring your own model</h2>
+    <p>Gremlin is a coordinator, not a model. Point it at any of the supported providers and pick a model per agent.</p>
+    <ul>
+      <li><strong>Local</strong> — Ollama, LM Studio, WebLLM (in-browser via WebGPU)</li>
+      <li><strong>Cloud</strong> — OpenAI, Anthropic, Google Gemini, OpenRouter, Groq, Together, or any OpenAI-compatible endpoint</li>
+    </ul>
+    <p>API keys are kept in <code class="mono">localStorage</code> and sent only to the provider you configure.</p>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Install</h2>
+    <p>Three commands. The dev server is the app — open the URL it prints.</p>
+    <div class="card">
+      <code class="code"><span class="c-prompt">$ </span>git clone https://github.com/aosmith/gremlin.git
+<span class="c-prompt">$ </span>cd gremlin/web
+<span class="c-prompt">$ </span>npm install
+<span class="c-prompt">$ </span>npm run dev
+<span class="c-comment"># → http://localhost:5173</span></code>
+      <p style="margin-top: 10px; font-size: 13.5px;">Requires Node.js 18+. For local inference, install <a href="https://ollama.com">Ollama</a>; Gremlin detects your GPU on first run and recommends per-agent models. For cloud inference, drop an API key into Settings.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <div>⚡ Gremlin &nbsp;·&nbsp; a product by <a href="https://thingg.co">thingg.co</a></div>
+    <div>
+      <a href="https://github.com/aosmith/gremlin">GitHub</a>
+      &nbsp;·&nbsp;
+      <a href="https://github.com/aosmith/gremlin/issues">Issues</a>
+      &nbsp;·&nbsp;
+      <a href="https://github.com/aosmith/gremlin/blob/main/LICENSE.md">License</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
